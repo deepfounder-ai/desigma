@@ -127,6 +127,30 @@ impl Session {
         Ok(resolved)
     }
 
+    /// Directory a code export writes into: inside the workspace, an existing
+    /// parent, and not an existing file or symlink.
+    fn project_path(&self, path: &str) -> Result<PathBuf, String> {
+        let requested = self.root.join(path);
+        let parent = requested
+            .parent()
+            .ok_or("Export path needs a parent directory")?
+            .canonicalize()
+            .map_err(|e| format!("Export directory must already exist: {e}"))?;
+        if !parent.starts_with(&self.root) {
+            return Err("Path must stay inside the configured workspace".into());
+        }
+        let resolved = parent.join(requested.file_name().ok_or("Export path needs a directory name")?);
+        if let Ok(meta) = fs::symlink_metadata(&resolved) {
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                return Err("Export path must be a directory (or not exist yet)".into());
+            }
+            if fs::read_dir(&resolved).map(|mut d| d.next().is_some()).unwrap_or(true) {
+                return Err("Export directory must be empty or not exist yet".into());
+            }
+        }
+        Ok(resolved)
+    }
+
     pub fn call(&mut self, name: &str, args: Value) -> Result<Value, String> {
         match (self.mode, self.discovery.as_deref().and_then(crate::live::probe_at)) {
             (Some(Mode::Editor), None) => {
@@ -201,6 +225,13 @@ impl Session {
                 fs::write(&path, png).map_err(|e| format!("Cannot write PNG: {e}"))?;
                 Ok(json!({"path":path,"width":width,"height":height}))
             }
+            "desigma_export_code" => {
+                let a: crate::engine::ExportCodeArgs = parse(args)?;
+                let dir = self.project_path(&a.path)?;
+                let project = crate::engine::export_code(&self.engine, &a)?;
+                let files = project.write_to(&dir)?;
+                Ok(json!({"path":dir,"files":files.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()}))
+            }
             "desigma_export_animation" => {
                 let a: crate::motion::ExportAnimArgs = parse(args)?;
                 let path = self.export_file_path(&a.path, crate::motion::extension(&a.format)?)?;
@@ -247,6 +278,10 @@ impl Session {
             "desigma_export_image" => {
                 let a: crate::engine::ExportArgs = parse(args.clone())?;
                 args["path"] = json!(self.png_path(&a.path)?);
+            }
+            "desigma_export_code" => {
+                let a: crate::engine::ExportCodeArgs = parse(args.clone())?;
+                args["path"] = json!(self.project_path(&a.path)?);
             }
             "desigma_export_animation" => {
                 let a: crate::motion::ExportAnimArgs = parse(args.clone())?;

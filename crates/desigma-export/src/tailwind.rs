@@ -11,13 +11,22 @@ use desigma_doc::*;
 /// are written as `<Component prop="value" />`.
 pub fn tailwind_for(doc: &Document, node: NodeId) -> String {
     let mut o = Out::new("  ");
-    markup(doc, node, Parent::root(), 0, &mut o, false);
+    markup(doc, node, Parent::root(), 0, &mut o, false, false);
+    o.finish()
+}
+
+/// The same markup for a standalone HTML page: component instances become
+/// `div`s (an unknown tag would be dropped by the browser, taking the instance's
+/// resolved children with it) and asset paths are relative to the page.
+pub fn tailwind_html(doc: &Document, node: NodeId) -> String {
+    let mut o = Out::new("  ");
+    markup(doc, node, Parent::root(), 0, &mut o, false, true);
     o.finish()
 }
 
 /// Same markup for use inside JSX (`className`, escaped text).
 pub(crate) fn jsx_markup(doc: &Document, node: NodeId, depth: usize, o: &mut Out) {
-    markup(doc, node, Parent::root(), depth, o, true);
+    markup(doc, node, Parent::root(), depth, o, true, false);
 }
 
 const SPACING: [(f32, &str); 35] = [
@@ -62,10 +71,20 @@ fn space_token(px: f32) -> Option<&'static str> {
     SPACING.iter().find(|(v, _)| (*v - px).abs() < 1e-3).map(|(_, t)| *t)
 }
 
+/// A length token as a CSS value: number tokens are stored unitless, so they
+/// need `calc(var(--x) * 1px)` to be a valid length.
+fn length_var(v: &Variable) -> String {
+    if v.kind == VariableKind::Number {
+        format!("calc({}*1px)", css_var(v))
+    } else {
+        css_var(v)
+    }
+}
+
 /// `prefix-token` or `prefix-[Npx]` / `prefix-[var(--x)]`.
 fn spaced(prefix: &str, px: f32, var: Option<&Variable>) -> String {
     if let Some(v) = var {
-        return format!("{prefix}-[{}]", css_var(v));
+        return format!("{prefix}-[{}]", length_var(v));
     }
     match space_token(px) {
         Some(t) => format!("{prefix}-{t}"),
@@ -123,14 +142,14 @@ fn corner_classes(doc: &Document, n: &Node) -> Vec<String> {
         }
     }
     if any_bound && keys.iter().all(|k| bound(doc, n, k).map(|v| v.id.as_str()) == bound(doc, n, keys[0]).map(|v| v.id.as_str())) {
-        return vec![format!("rounded-[{}]", css_var(bound(doc, n, keys[0]).unwrap()))];
+        return vec![format!("rounded-[{}]", length_var(bound(doc, n, keys[0]).unwrap()))];
     }
     ["tl", "tr", "br", "bl"]
         .iter()
         .enumerate()
         .filter(|(i, _)| r[*i] > 0.0 || bound(doc, n, keys[*i]).is_some())
         .map(|(i, side)| match bound(doc, n, keys[i]) {
-            Some(v) => format!("rounded-{side}-[{}]", css_var(v)),
+            Some(v) => format!("rounded-{side}-[{}]", length_var(v)),
             None => format!("rounded-{side}-[{}px]", num(r[i])),
         })
         .collect()
@@ -232,7 +251,7 @@ fn text_classes(doc: &Document, n: &Node, t: &TextProps, c: &mut Vec<String>) {
         _ => None,
     };
     match (bound(doc, n, "fontSize"), fs) {
-        (Some(v), _) => c.push(format!("text-[length:{}]", css_var(v))),
+        (Some(v), _) => c.push(format!("text-[length:{}]", length_var(v))),
         (None, Some(t)) => c.push(t.into()),
         (None, None) => c.push(format!("text-[{}px]", num(s.font_size))),
     }
@@ -256,13 +275,13 @@ fn text_classes(doc: &Document, n: &Node, t: &TextProps, c: &mut Vec<String>) {
         c.push("italic".into());
     }
     match (bound(doc, n, "lineHeight"), s.line_height) {
-        (Some(v), _) => c.push(format!("leading-[{}]", css_var(v))),
+        (Some(v), _) => c.push(format!("leading-[{}]", length_var(v))),
         (None, LineHeight::Auto) => {}
         (None, LineHeight::Pixels(p)) => c.push(spaced("leading", p, None)),
         (None, LineHeight::Percent(p)) => c.push(format!("leading-[{}]", num2(p / 100.0))),
     }
     match (bound(doc, n, "letterSpacing"), s.letter_spacing) {
-        (Some(v), _) => c.push(format!("tracking-[{}]", css_var(v))),
+        (Some(v), _) => c.push(format!("tracking-[{}]", length_var(v))),
         (None, l) if l != 0.0 => c.push(format!("tracking-[{}px]", num(l))),
         _ => {}
     }
@@ -439,7 +458,7 @@ pub(crate) fn instance_attrs(doc: &Document, n: &Node) -> String {
     o
 }
 
-fn markup(doc: &Document, id: NodeId, parent: Parent, depth: usize, o: &mut Out, jsx: bool) {
+fn markup(doc: &Document, id: NodeId, parent: Parent, depth: usize, o: &mut Out, jsx: bool, html: bool) {
     let Some(n) = doc.get(id) else { return };
     if !n.visible {
         return;
@@ -448,18 +467,40 @@ fn markup(doc: &Document, id: NodeId, parent: Parent, depth: usize, o: &mut Out,
     let cls = classes(doc, n, parent).join(" ");
     let class_attr = if cls.is_empty() { String::new() } else { format!(" {attr}=\"{cls}\"") };
 
-    if matches!(n.kind, NodeKind::Instance { .. }) {
+    // In a standalone page an unknown tag would be dropped by the browser, taking
+    // the instance's resolved children with it, so it becomes a `div` there.
+    if matches!(n.kind, NodeKind::Instance { .. }) && !html {
         o.line(depth, format!("<{}{}{class_attr} />", view_name(doc, n), instance_attrs(doc, n)));
         return;
     }
     if is_vector_asset(doc, id) {
-        let src = format!("/assets/{}.svg", kind_slug(&n.name));
+        let src = if html { format!("assets/{}.svg", kind_slug(&n.name)) } else { format!("/assets/{}.svg", kind_slug(&n.name)) };
         let size = if jsx {
             format!(" width={{{}}} height={{{}}}", num(n.size.x), num(n.size.y))
         } else {
             format!(" width=\"{}\" height=\"{}\"", num(n.size.x), num(n.size.y))
         };
-        let no_size: String = cls.split(' ').filter(|c| !c.starts_with("w-") && !c.starts_with("h-")).collect::<Vec<_>>().join(" ");
+        // The SVG paints itself, so only the classes that place it belong on the
+        // <img>: a `border`, `bg-*` or `shadow-*` copied from the vector would
+        // draw a box around the icon.
+        let keep = |c: &str| {
+            !c.starts_with("w-")
+                && !c.starts_with("h-")
+                && (c.starts_with("absolute")
+                    || c.starts_with("relative")
+                    || c.starts_with("left-")
+                    || c.starts_with("top-")
+                    || c.starts_with("right-")
+                    || c.starts_with("bottom-")
+                    || c.starts_with("shrink")
+                    || c.starts_with("flex-")
+                    || c.starts_with("self-")
+                    || c.starts_with("grow")
+                    || c.starts_with("order-")
+                    || c.starts_with("rotate-")
+                    || c.starts_with("z-"))
+        };
+        let no_size: String = cls.split(' ').filter(|c| keep(c)).collect::<Vec<_>>().join(" ");
         let class_attr = if no_size.is_empty() { String::new() } else { format!(" {attr}=\"{no_size}\"") };
         o.line(depth, format!("<img src=\"{src}\" alt=\"{}\"{size}{class_attr} />", n.name.replace('"', "&quot;")));
         return;
@@ -481,7 +522,7 @@ fn markup(doc: &Document, id: NodeId, parent: Parent, depth: usize, o: &mut Out,
     o.line(depth, format!("<{tag}{class_attr}>"));
     let me = Parent::of(n);
     for k in kids {
-        markup(doc, k.id, me, depth + 1, o, jsx);
+        markup(doc, k.id, me, depth + 1, o, jsx, html);
     }
     o.line(depth, format!("</{tag}>"));
 }
@@ -501,12 +542,28 @@ mod tests {
         let expected = r####"<div class="flex flex-col items-start gap-2 p-4 w-[312px] h-[200px] bg-[#FFFFFF] border border-[#E5E5E5] rounded-lg overflow-hidden shadow-[0px_4px_8px_0px_rgba(0,0,0,0.25)]">
   <p class="font-['Inter'] text-xl font-semibold text-[#111111]">Hello world</p>
   <p class="self-stretch font-['Inter'] text-sm font-normal leading-5 text-center text-[color:var(--color-text-muted)]">Body copy</p>
-  <div class="flex justify-center items-center gap-[var(--spacing-md)] px-3 py-2 self-stretch bg-[var(--color-primary)] rounded">
+  <div class="flex justify-center items-center gap-[calc(var(--spacing-md)*1px)] px-3 py-2 self-stretch bg-[var(--color-primary)] rounded">
     <Button label="Save" disabled class="w-20 h-8 shrink-0" />
     <div class="w-6 h-6 shrink-0 bg-[#FF0000] rounded-full"></div>
   </div>
 </div>"####;
         assert_eq!(tailwind_for(&d, id), expected);
+    }
+
+    #[test]
+    fn html_page_writes_instances_as_divs_and_relative_assets() {
+        let (d, id) = fixture::card();
+        let out = tailwind_html(&d, id);
+        assert!(!out.contains("<Button"), "an unknown tag would be dropped: {out}");
+        assert!(out.contains("w-20 h-8 shrink-0"), "the instance keeps its classes: {out}");
+        let (mut d, card) = fixture::card();
+        let v = d.alloc_id();
+        let mut icon = Node::new(v, NodeKind::Vector { paths: vec![], network: None });
+        icon.name = "Chevron Down".into();
+        icon.size = Vec2::new(16.0, 16.0);
+        d.insert(card, icon).unwrap();
+        assert!(tailwind_html(&d, card).contains("src=\"assets/chevron-down.svg\""), "asset paths are relative to the page");
+        assert!(tailwind_for(&d, card).contains("src=\"/assets/chevron-down.svg\""), "Dev Mode keeps the served path");
     }
 
     #[test]

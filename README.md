@@ -105,7 +105,7 @@ Every screenshot here is the real app on its built-in showcase file, captured of
       <h3>Hand off as code</h3>
       Switch to Dev mode for measurements, a box model and generated code in CSS, Tailwind, SwiftUI, Jetpack Compose or React. Mark frames Ready for dev, and add annotations and links for whoever builds them.
       <br><br>
-      <b>Copy</b> a snippet in one click, or switch language without leaving the panel.
+      <b>Copy</b> a snippet in one click, or switch language without leaving the panel. <b>File → Export code…</b> turns a whole frame into a runnable project instead: `index.html` + `styles.css`, a React component with its entry point, Tailwind markup, `View.swift` or `Screen.kt`, plus `tokens.css` and an `assets/` folder.
     </td>
   </tr>
   <tr>
@@ -165,7 +165,7 @@ Every screenshot here is the real app on its built-in showcase file, captured of
       <h3>Everything a keystroke away</h3>
       The main menu, tool dropdowns, context menus and the command palette all share one consistent menu widget, with full keyboard navigation and submenus.
       <br><br>
-      <b>Export</b> to PNG, JPG and real vector SVG at any scale, copy as PNG, SVG or CSS, and switch to Dev mode for measurements and ready-to-paste CSS.
+      <b>Export</b> to PNG, JPG and real vector SVG at any scale, copy as PNG, SVG or CSS, switch to Dev mode for measurements and ready-to-paste CSS, and export a whole frame as a code project (HTML + CSS, React, Tailwind, SwiftUI or Compose).
     </td>
   </tr>
 </table>
@@ -348,14 +348,27 @@ desigma --seed-library ./my-library                            # fill a library 
 desigma --home --library ./my-library --screenshot home.png    # the projects home screen on a library directory
 desigma --fixture variables --panel variables --screenshot v.png  # the Variables view
 desigma-diff compare reference.png actual.png --out diff.png   # pixel-compare two images
+desigma --export-code app.desigma --out ./web --code html       # a frame as index.html + styles.css + tokens.css + assets/
+desigma --export-code app.desigma --select Card --out ./app --code react --code-tailwind   # App.jsx styled with Tailwind classes
+desigma --proxy http://127.0.0.1:3128                           # this run through a proxy (off, system or a URL)
 ```
 
 > [!IMPORTANT]
 > **Status:** desigma is in early alpha. Much of Figma's everyday design surface exists, but **it is not yet a replacement for professional daily work**. The biggest gaps are collaboration, plugins, PDF export, `.fig` features that real files haven't exercised yet, and code-signed release builds. Expect rough edges, and please file issues with your OS, a sample file if you can share one, and a screenshot.
 
+## Network proxy
+
+desigma never guesses the proxy from whatever is in the environment. **Preferences → Network proxy…** has three modes:
+
+* **System** (default) — a launch from a terminal uses exactly that shell's `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and `NO_PROXY`; a shell without them means no proxy, even when the desktop has one. A launch from the app menu, Finder or Explorer has no shell environment and reads the desktop-wide proxy instead (GNOME/KDE settings on Linux, `scutil` on macOS, Internet Settings on Windows).
+* **Custom** — the URL and bypass list you type, saved in `settings.json`.
+* **Off** — every request connects directly.
+
+The choice covers everything desigma fetches: fonts, Figma REST imports, plugins and update checks. `--proxy off|system|<url>` overrides it for one run.
+
 ## MCP integration
 
-Build the local server with `cargo build --locked -p desigma-mcp`, then configure your MCP client to launch `desigma-mcp --workspace /path/to/designs`. It provides 16 tools for importing files, inspecting layers and tokens, generating code, editing with undo/redo, and saving a new `.desigma` file. With the editor's agent bridge on (Preferences → **Allow MCP agents to control this editor**, or launch with `desigma --bridge`), the same tools edit the document that is open on screen and share its Undo; a status pill shows while the bridge is on. Without a running editor the server works on an isolated file session as before. See the [setup and tool reference](crates/desigma-mcp/README.md).
+Build the local server with `cargo build --locked -p desigma-mcp`, then configure your MCP client to launch `desigma-mcp --workspace /path/to/designs`. It provides 21 tools for importing files, inspecting layers and tokens, generating code, exporting a frame as a code project, editing with undo/redo, and saving a new `.desigma` file. With the editor's agent bridge on (Preferences → **Allow MCP agents to control this editor**, or launch with `desigma --bridge`), the same tools edit the document that is open on screen and share its Undo; a status pill shows while the bridge is on. Without a running editor the server works on an isolated file session as before. See the [setup and tool reference](crates/desigma-mcp/README.md).
 
 ## Native plugin installation
 

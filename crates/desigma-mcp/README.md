@@ -61,7 +61,7 @@ desigma_update_node   {"node_id":42,"name":"Primary action","width":160}
 desigma_save_file     {"path":"output-v2.desigma"}
 ```
 
-`42` is illustrative: substitute an ID returned by the preceding queries. Relative paths resolve beneath `--workspace`. Absolute paths are accepted only within that same directory tree. Reads canonicalize paths and reject escapes; writes resolve the existing parent. `desigma_save_file` creates a new file and never overwrites an existing file or symlink; `desigma_export_image` overwrites an existing regular `.png` but never writes through a symlink.
+`42` is illustrative: substitute an ID returned by the preceding queries. Relative paths resolve beneath `--workspace`. Absolute paths are accepted only within that same directory tree. Reads canonicalize paths and reject escapes; writes resolve the existing parent. `desigma_save_file` creates a new file and never overwrites an existing file or symlink; `desigma_export_image` overwrites an existing regular `.png` but never writes through a symlink; `desigma_export_code` needs an empty or absent directory and never overwrites a file.
 
 Edits remain in memory until saved. Restarting the server loses unsaved work. Opening another file or starting a new document resets undo history and refuses to discard pending edits unless `discard_changes: true` is explicitly supplied. Save each revision under a new filename; overwriting is not supported. Tool failures return an MCP error result with an explanatory message.
 
@@ -84,6 +84,7 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_delete_node` | Remove a non-page layer and its descendants. |
 | `desigma_undo` / `desigma_redo` | Traverse the edit history. In the editor it is the user's own undo stack, so `desigma_undo` may undo the user's latest edit. |
 | `desigma_export_image` | Render a node to a PNG at `scale` (0.25–4, default 1) and write it to `path` inside the workspace, overwriting if present; returns `{path,width,height}`. Works in both session types. |
+| `desigma_export_code` | Write a whole frame, section, component or page as a code project in `path` (a directory that must be empty or not exist yet): `index.html` + `styles.css` (`html`), `App.jsx` + `index.jsx` (`react`), `index.html` with Tailwind classes (`tailwind`), `View.swift` (`swiftui`) or `Screen.kt` (`compose`), plus `tokens.css` and `assets/` when the design needs them. `react_tailwind` switches React to classes; `tokens: false` skips `tokens.css`. Returns `{path, files}`. Never overwrites a file. |
 | `desigma_get_selection` | Read the editor's current selection. Editor only; fails in a file session. |
 | `desigma_select_nodes` | Select 1–500 `node_ids` on one page in the editor (switching to that page) and, with `reveal` (default `true`), scroll/zoom to them. Editor only; fails in a file session. |
 
