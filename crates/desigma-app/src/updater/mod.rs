@@ -351,15 +351,17 @@ fn fetch(source: &str) -> Result<Vec<u8>, String> {
         let path = source.strip_prefix("file://").unwrap_or(source);
         return std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"));
     }
-    // a plain-http source is a local test server: no proxy (ureq ignores NO_PROXY)
+    // a plain-http source is a local test server: no proxy
     let tls = source.starts_with("https://");
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .https_only(tls)
-        .try_proxy_from_env(tls)
-        .user_agent(&format!("desigma/{}", crate::VERSION))
-        .build();
+    let opts = desigma_http::AgentOptions {
+        timeout_connect: Duration::from_secs(10),
+        timeout_read: Some(Duration::from_secs(30)),
+        timeout_write: Some(Duration::from_secs(30)),
+        https_only: tls,
+        ..Default::default()
+    }
+    .user_agent(format!("desigma/{}", crate::VERSION));
+    let agent = if tls { desigma_http::agent_with(&opts, source) } else { opts.agent_for(None, source) };
     let response = agent.get(source).set("Accept", "application/vnd.github+json").set("X-GitHub-Api-Version", "2022-11-28").call().map_err(|e| match e {
         ureq::Error::Status(403 | 429, _) => "GitHub's hourly limit was reached. Try again later".to_string(),
         ureq::Error::Status(code, _) => format!("GitHub answered {code}"),

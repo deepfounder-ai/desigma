@@ -306,12 +306,14 @@ pub fn load_bundle(root: &Path, plugin: &InstalledPlugin) -> Result<Bundle, Stri
 }
 
 pub fn install(root: &Path, input: &str) -> Result<InstalledPlugin, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .redirects(0)
-        .user_agent("desigma-plugin-installer")
-        .build();
+    let opts = desigma_http::AgentOptions {
+        timeout_connect: Duration::from_secs(10),
+        timeout_read: Some(Duration::from_secs(30)),
+        timeout_write: Some(Duration::from_secs(30)),
+        redirects: 0,
+        ..Default::default()
+    }
+    .user_agent("desigma-plugin-installer");
     let token = std::env::var("DESIGMA_PLUGINS_TOKEN").ok().filter(|value| !value.trim().is_empty());
     install_with(root, input, |url| {
         // All supplied URLs were constructed from the validated native repository path.
@@ -321,6 +323,7 @@ pub fn install(root: &Path, input: &str) -> Result<InstalledPlugin, String> {
         let mut api_url = Url::parse(&format!("https://api.github.com/repos/{REPOSITORY}/contents/{}", segments[3..].join("/")))
             .map_err(|_| "Invalid plugin download path.".to_string())?;
         api_url.query_pairs_mut().append_pair("ref", segments[2]);
+        let agent = desigma_http::agent_with(&opts, api_url.as_str());
         let mut request = agent.get(api_url.as_str()).set("Accept", "application/vnd.github.raw+json").set("X-GitHub-Api-Version", "2022-11-28");
         if let Some(token) = &token {
             request = request.set("Authorization", &format!("Bearer {}", token.trim()));

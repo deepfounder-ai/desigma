@@ -52,6 +52,29 @@ pub fn save_string(root: &Path, key: &str, value: &str) -> Result<(), String> {
     write(root, map)
 }
 
+/// A nested object setting (`key` -> JSON object), or `None` when missing.
+pub fn load_object(root: &Path, key: &str) -> Option<serde_json::Value> {
+    read(root).get(key).filter(|v| v.is_object()).cloned()
+}
+
+pub fn save_object(root: &Path, key: &str, value: serde_json::Value) -> Result<(), String> {
+    let mut map = read(root);
+    map.insert(key.into(), value);
+    write(root, map)
+}
+
+/// Key of the network proxy settings in `settings.json`.
+pub const PROXY_KEY: &str = "proxy";
+
+/// The saved proxy settings (system defaults when the file has none).
+pub fn load_proxy(root: &Path) -> desigma_http::ProxyConfig {
+    load_object(root, PROXY_KEY).map(|v| desigma_http::ProxyConfig::from_json(&v)).unwrap_or_default()
+}
+
+pub fn save_proxy(root: &Path, config: &desigma_http::ProxyConfig) -> Result<(), String> {
+    save_object(root, PROXY_KEY, config.to_json())
+}
+
 /// Saves the author name (an empty name resets to the OS user name).
 pub fn save_author(root: &Path, name: &str) -> Result<(), String> {
     let mut map = read(root);
@@ -119,5 +142,21 @@ mod tests {
     #[test]
     fn os_user_is_never_empty() {
         assert!(!os_user_name().is_empty());
+    }
+
+    #[test]
+    fn proxy_roundtrip_keeps_other_keys() {
+        let d = tmp("p");
+        assert_eq!(load_proxy(&d), desigma_http::ProxyConfig::default());
+        save_author(&d, "Ann").unwrap();
+        let c = desigma_http::ProxyConfig {
+            mode: desigma_http::ProxyMode::Custom,
+            url: "http://127.0.0.1:3128".into(),
+            no_proxy: "localhost".into(),
+        };
+        save_proxy(&d, &c).unwrap();
+        assert_eq!(load_proxy(&d), c);
+        assert_eq!(load_author(&d).as_deref(), Some("Ann"), "other keys survive");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -40,17 +40,18 @@ fn open(url: &str, max: u64, cancel: &AtomicBool) -> Result<(Body, Option<u64>),
         if cancel.load(Ordering::Relaxed) {
             return Err(Fail::Cancelled);
         }
-        // a plain-http source is a local test server: no proxy (ureq ignores NO_PROXY)
+        // a plain-http source is a local test server: no proxy
         let tls = url.scheme() == "https";
-        let agent = ureq::AgentBuilder::new()
-            .redirects(0)
-            .timeout_connect(Duration::from_secs(10))
-            .timeout_read(Duration::from_secs(30))
-            .timeout_write(Duration::from_secs(30))
-            .https_only(tls)
-            .try_proxy_from_env(tls)
-            .user_agent(&format!("desigma/{}", crate::VERSION))
-            .build();
+        let opts = desigma_http::AgentOptions {
+            redirects: 0,
+            timeout_connect: Duration::from_secs(10),
+            timeout_read: Some(Duration::from_secs(30)),
+            timeout_write: Some(Duration::from_secs(30)),
+            https_only: tls,
+            ..Default::default()
+        }
+        .user_agent(format!("desigma/{}", crate::VERSION));
+        let agent = if tls { desigma_http::agent_with(&opts, url.as_str()) } else { opts.agent_for(None, url.as_str()) };
         let response = agent.get(url.as_str()).set("Accept", "application/octet-stream").call().map_err(|e| match e {
             ureq::Error::Status(403 | 429, _) => "GitHub's limit was reached. Try again later".to_string(),
             ureq::Error::Status(code, _) => format!("GitHub answered {code}"),

@@ -177,6 +177,12 @@ pub struct App {
     pub file_hash: Option<u64>,
     /// An open waiting for the answer to "Discard unsaved changes?".
     pub pending_open: Option<crate::instance::Open>,
+    /// Preferences → Network proxy (also installed process-wide in `desigma_http`).
+    pub proxy: desigma_http::ProxyConfig,
+    /// The Preferences → Network proxy dialog is open.
+    pub proxy_dialog: Option<crate::network::ProxyDialog>,
+    /// File → Export code… dialog.
+    pub code_export: Option<crate::code_export_ui::CodeExportDialog>,
 }
 
 impl App {
@@ -231,6 +237,9 @@ impl App {
             collab: Default::default(),
             file_hash: None,
             pending_open: None,
+            proxy: desigma_http::config(),
+            proxy_dialog: None,
+            code_export: None,
         }
     }
 

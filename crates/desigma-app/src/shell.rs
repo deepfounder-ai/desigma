@@ -45,7 +45,18 @@ impl Shell {
         // "Open in new window" children leave update checks to the first window
         let launch = !screenshot && opts.open_id.is_none();
         let (gpu_flag, bridge_flag, library) = (opts.gpu, opts.bridge, opts.library.clone());
+        // The proxy must be installed before anything fetches (fonts, updates, plugins).
+        // `--proxy` wins over the saved settings, which `main` already installed.
+        if opts.proxy.is_none() {
+            if let Some(root) = &library {
+                desigma_http::set_config(crate::comments::settings::load_proxy(root));
+            }
+        }
         let mut shell = Self::build(&cc.egui_ctx, opts);
+        // Preferences shows the saved settings, not a one-run `--proxy` override.
+        if let Some(root) = &library {
+            shell.app.proxy = crate::comments::settings::load_proxy(root);
+        }
         if let Some(rs) = &cc.wgpu_render_state {
             if let Some(max) = canvas::gpu::init(rs) {
                 shell.app.canvas.gpu.available = true;
@@ -671,6 +682,7 @@ impl Shell {
         }
         crate::home::show(&mut self.app, ui);
         crate::home::dialog::show(&mut self.app, ctx);
+        crate::network::show(&mut self.app, ctx);
         crate::collab::ui::join_dialog(&mut self.app, ctx);
         crate::unsaved::dialog(&mut self.app, ctx);
         let full = ui.max_rect();
@@ -797,6 +809,8 @@ impl Shell {
             crate::variables::view::show(&mut self.app, ui, full);
         }
         crate::home::dialog::show(&mut self.app, &ctx);
+        crate::network::show(&mut self.app, &ctx);
+        crate::code_export_ui::show(&mut self.app, &ctx);
         crate::history::modal::show(&mut self.app, &ctx);
         crate::dev::compare::show(&mut self.app, &ctx);
         crate::libraries::show(&mut self.app, &ctx);

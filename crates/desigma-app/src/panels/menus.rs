@@ -23,6 +23,8 @@ pub enum Action {
     Save,
     SaveAs,
     Export,
+    /// File -> Export code…: a whole frame as an HTML/CSS, React, Tailwind, SwiftUI or Compose project.
+    ExportCode,
     ExportSlidePdf,
     ExportDeckPdf,
     Undo,
@@ -109,6 +111,8 @@ pub enum Action {
     ToggleUpdateCheck,
     /// Preferences -> Allow MCP agents to control this editor.
     ToggleAgentBridge,
+    /// Preferences -> Network proxy…
+    NetworkProxy,
     /// Help -> Check for updates.
     CheckForUpdates,
     Shortcuts,
@@ -131,6 +135,7 @@ pub fn run(app: &mut App, ctx: &Context, a: Action) {
         Action::Save => app.save(false),
         Action::SaveAs => app.save(true),
         Action::Export => app.export_selection(),
+        Action::ExportCode => app.export_code_dialog(),
         Action::ExportSlidePdf => app.export_deck_pdf(false),
         Action::ExportDeckPdf => app.export_deck_pdf(true),
         Action::Undo => {
@@ -230,6 +235,7 @@ pub fn run(app: &mut App, ctx: &Context, a: Action) {
         Action::ToggleGpu => app.toggle_gpu(),
         Action::ToggleUpdateCheck => app.toggle_update_check(),
         Action::ToggleAgentBridge => app.toggle_agent_bridge(ctx),
+        Action::NetworkProxy => app.open_proxy_dialog(),
         Action::CheckForUpdates => app.check_for_updates(ctx, true),
         Action::Shortcuts => app.show_shortcuts(),
         Action::AboutDesigma => app.show_about(),
@@ -373,6 +379,7 @@ fn main_nodes(app: &App) -> Vec<Node> {
         leaf("Show version history", "", Action::ToggleVersionHistory).on(app.history.open),
         leaf("Save to version history…", "Ctrl+Alt+S", Action::SaveVersion).off(!app.has_history()).sep(),
         leaf("Export selection as PNG…", "", Action::Export).off(!has_sel),
+        leaf("Export code…", "", Action::ExportCode).off(!has_sel),
     ];
     if app.is_deck() {
         file.push(leaf("Export current slide as PDF…", "", Action::ExportSlidePdf).off(app.deck_pdf_slides(false).is_err()));
@@ -488,6 +495,7 @@ fn main_nodes(app: &App) -> Vec<Node> {
                     .on(crate::RELEASE_BUILD && !app.updater.no_auto_check)
                     .off(!crate::RELEASE_BUILD),
                 leaf("Allow MCP agents to control this editor", "", Action::ToggleAgentBridge).on(app.bridge.bridge.is_some()),
+                leaf("Network proxy…", "", Action::NetworkProxy),
             ],
         ),
         leaf("Libraries", "", Action::About).off(true).sep(),
@@ -565,6 +573,7 @@ fn file_items(app: &App) -> Vec<(MenuItem, Option<Action>)> {
         (MenuItem::new("Create component").shortcut("Ctrl+Alt+K").disabled(!has_sel), Some(Action::CreateComponent)),
         (MenuItem::new("Detach instance").shortcut("Ctrl+Alt+B").disabled(!has_sel).sep(), Some(Action::Detach)),
         (MenuItem::new("Export selection as PNG…").disabled(!has_sel), Some(Action::Export)),
+        (MenuItem::new("Export code…").disabled(!has_sel), Some(Action::ExportCode)),
     ];
     if app.is_deck() {
         items.push((MenuItem::new("Export current slide as PDF…").disabled(app.deck_pdf_slides(false).is_err()), Some(Action::ExportSlidePdf)));

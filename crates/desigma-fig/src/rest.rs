@@ -19,7 +19,8 @@ fn net_err(what: &str, e: ureq::Error) -> FigError {
 }
 
 fn get(url: &str, token: Option<&str>, what: &str) -> Result<Vec<u8>, FigError> {
-    let mut req = ureq::get(url);
+    let agent = desigma_http::agent_for(url);
+    let mut req = agent.get(url);
     if let Some(t) = token {
         req = req.set("X-Figma-Token", t);
     }
