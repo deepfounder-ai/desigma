@@ -477,8 +477,56 @@ pub fn tools() -> Vec<Value> {
         false,
         true,
     );
+    add(
+        "export_code",
+        "Write a whole frame, section, component or page as a code project in the workspace: index.html + styles.css (html), App.jsx (react), index.html with Tailwind classes (tailwind), View.swift (swiftui) or Screen.kt (compose), plus tokens.css and an assets/ folder when the design needs them. Returns the files written; never overwrites an existing file.",
+        json!({
+            "node_id":id,
+            "target":{"type":"string","enum":["html","react","tailwind","swiftui","compose"],"default":"html"},
+            "path":{"type":"string","description":"Project directory, relative to the workspace; must not exist yet."},
+            "react_tailwind":{"type":"boolean","default":false,"description":"React only: style with Tailwind classes instead of inline styles."},
+            "tokens":{"type":"boolean","default":true,"description":"Write tokens.css with the design variables."},
+            "fonts":{"type":"boolean","default":true,"description":"Write fonts.css and the font files the design uses."}
+        }),
+        vec!["node_id", "path"],
+        false,
+        true,
+    );
     out.extend(crate::motion::tools());
     out
+}
+
+/// Arguments of `desigma_export_code`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportCodeArgs {
+    pub node_id: u64,
+    #[serde(default = "default_target")]
+    pub target: String,
+    pub path: String,
+    #[serde(default)]
+    pub react_tailwind: bool,
+    #[serde(default = "yes")]
+    pub tokens: bool,
+    #[serde(default = "yes")]
+    pub fonts: bool,
+}
+
+fn default_target() -> String {
+    "html".into()
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Builds the code project for `a.node_id` (no filesystem access: the caller writes it).
+pub fn export_code<H: Host>(host: &H, a: &ExportCodeArgs) -> Result<desigma_export::CodeProject, String> {
+    let id = node(host, a.node_id)?.id;
+    let target = desigma_export::CodeTarget::parse(&a.target).ok_or("target must be html, react, tailwind, swiftui or compose")?;
+    let doc = desigma_doc::apply_bound_variables(host.doc());
+    let opts = desigma_export::CodeOptions { target, react_tailwind: a.react_tailwind, tokens: a.tokens, embed_fonts: a.fonts, asset_dir: "assets".into() };
+    desigma_export::export_project(&doc, id, &opts)
 }
 
 #[cfg(test)]
@@ -673,5 +721,41 @@ mod tests {
         let t = tools().into_iter().find(|t| t["name"] == "desigma_export_image").unwrap();
         assert_eq!(t["annotations"]["readOnlyHint"], false);
         assert_eq!(t["annotations"]["idempotentHint"], true);
+    }
+
+    #[test]
+    fn export_code_builds_a_project_for_a_frame() {
+        let mut e = Engine::default();
+        let page = e.doc.pages[0];
+        let id = e.doc.alloc_id();
+        let mut frame = Node::frame(id, Rect::new(0.0, 0.0, 120.0, 80.0));
+        frame.name = "Card".into();
+        e.doc.insert(page, frame).unwrap();
+        let a = ExportCodeArgs { node_id: id.0, target: "html".into(), path: "out".into(), react_tailwind: false, tokens: true, fonts: true };
+        let project = export_code(&e, &a).unwrap();
+        assert!(project.file("index.html").is_some());
+        assert!(project.file("styles.css").is_some());
+    }
+
+    #[test]
+    fn export_code_rejects_a_bad_target_and_a_single_shape() {
+        let mut e = Engine::default();
+        let id = create(&mut e, "rectangle", "Box");
+        let a = ExportCodeArgs { node_id: id, target: "html".into(), path: "out".into(), react_tailwind: false, tokens: true, fonts: true };
+        assert!(export_code(&e, &a).unwrap_err().contains("frame, section, component or page"));
+        let page = e.doc.pages[0];
+        let frame_id = e.doc.alloc_id();
+        let frame = Node::frame(frame_id, Rect::new(0.0, 0.0, 10.0, 10.0));
+        e.doc.insert(page, frame).unwrap();
+        let a = ExportCodeArgs { node_id: frame_id.0, target: "cobol".into(), path: "out".into(), react_tailwind: false, tokens: true, fonts: true };
+        assert!(export_code(&e, &a).unwrap_err().contains("target must be"));
+    }
+
+    #[test]
+    fn export_code_is_listed_with_its_targets() {
+        let t = tools().into_iter().find(|t| t["name"] == "desigma_export_code").unwrap();
+        assert_eq!(t["annotations"]["readOnlyHint"], false);
+        let targets = t["inputSchema"]["properties"]["target"]["enum"].as_array().unwrap();
+        assert_eq!(targets.len(), 5);
     }
 }

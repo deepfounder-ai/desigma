@@ -13,6 +13,7 @@ members = [
     "crates/desigma-svg",
     "crates/desigma-gpu",
     "crates/desigma-mcp",
+    "crates/desigma-http",
     "crates/desigma-net",
     "crates/desigma-collab",
     "crates/desigma-server",
@@ -36,6 +37,7 @@ desigma-export = { path = "crates/desigma-export" }
 desigma-svg = { path = "crates/desigma-svg" }
 desigma-gpu = { path = "crates/desigma-gpu" }
 desigma-mcp = { path = "crates/desigma-mcp", default-features = false }
+desigma-http = { path = "crates/desigma-http" }
 desigma-net = { path = "crates/desigma-net" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

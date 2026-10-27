@@ -217,7 +217,7 @@ mod tests {
           padding: '8px 12px',
           justifyContent: 'center',
           alignItems: 'center',
-          gap: 'var(--spacing-md)',
+          gap: 'calc(var(--spacing-md) * 1px)',
           background: 'var(--color-primary)',
           borderRadius: 4,
         }}
@@ -253,7 +253,7 @@ mod tests {
     <div className="flex flex-col items-start gap-2 p-4 w-[312px] h-[200px] bg-[#FFFFFF] border border-[#E5E5E5] rounded-lg overflow-hidden shadow-[0px_4px_8px_0px_rgba(0,0,0,0.25)]">
       <p className="font-['Inter'] text-xl font-semibold text-[#111111]">Hello world</p>
       <p className="self-stretch font-['Inter'] text-sm font-normal leading-5 text-center text-[color:var(--color-text-muted)]">Body copy</p>
-      <div className="flex justify-center items-center gap-[var(--spacing-md)] px-3 py-2 self-stretch bg-[var(--color-primary)] rounded">
+      <div className="flex justify-center items-center gap-[calc(var(--spacing-md)*1px)] px-3 py-2 self-stretch bg-[var(--color-primary)] rounded">
         <Button label="Save" disabled className="w-20 h-8 shrink-0" />
         <div className="w-6 h-6 shrink-0 bg-[#FF0000] rounded-full" />
       </div>

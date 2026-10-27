@@ -4,6 +4,7 @@ mod bridge;
 mod canvas;
 mod cli;
 mod clipboard;
+mod code_export_ui;
 mod collab;
 mod comments;
 mod comp_ops;
@@ -26,6 +27,7 @@ mod loopback;
 #[cfg(target_os = "macos")]
 mod macos;
 mod motion;
+mod network;
 mod ops;
 mod panels;
 mod plugins;
@@ -90,6 +92,25 @@ fn main() {
         println!("desigma {VERSION}");
         return;
     }
+    if let Some(proxy) = &opts.proxy {
+        match parse_proxy_flag(proxy) {
+            Some(config) => desigma_http::set_config(config),
+            None => {
+                eprintln!("desigma: invalid --proxy '{proxy}' (expected off, system or a URL like http://host:port)");
+                std::process::exit(2);
+            }
+        }
+    }
+    if let Some(file) = &opts.export_code {
+        match code_export_ui::run_cli(file, opts.code.as_deref(), opts.out.as_deref(), opts.select.as_deref(), opts.code_tailwind, opts.no_tokens) {
+            Ok(msg) => println!("desigma: {msg}"),
+            Err(e) => {
+                eprintln!("desigma: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Some(file) = &opts.export_animation {
         match motion::playback::export::run_cli(file, opts.format.as_deref(), opts.out.as_deref(), opts.fps, opts.scale, opts.select.as_deref(), opts.dither) {
             Ok(msg) => println!("desigma: {msg}"),
@@ -145,6 +166,33 @@ fn main() {
     if screenshot_mode && !shell::SHOT_OK.load(Ordering::SeqCst) {
         eprintln!("desigma: screenshot was not captured");
         std::process::exit(1);
+    }
+}
+
+/// `--proxy off|system|<url>`: what this run should use.
+fn parse_proxy_flag(v: &str) -> Option<desigma_http::ProxyConfig> {
+    let v = v.trim();
+    if v.eq_ignore_ascii_case("off") {
+        return Some(desigma_http::ProxyConfig { mode: desigma_http::ProxyMode::Off, ..Default::default() });
+    }
+    if v.eq_ignore_ascii_case("system") {
+        return Some(desigma_http::ProxyConfig::default());
+    }
+    desigma_http::validate_proxy_url(v).ok()?;
+    Some(desigma_http::ProxyConfig { mode: desigma_http::ProxyMode::Custom, url: v.to_string(), no_proxy: String::new() })
+}
+
+#[cfg(test)]
+mod proxy_flag_tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_three_forms() {
+        assert_eq!(parse_proxy_flag("off").unwrap().mode, desigma_http::ProxyMode::Off);
+        assert_eq!(parse_proxy_flag("System").unwrap().mode, desigma_http::ProxyMode::System);
+        let c = parse_proxy_flag("http://127.0.0.1:3128").unwrap();
+        assert_eq!((c.mode, c.url.as_str()), (desigma_http::ProxyMode::Custom, "http://127.0.0.1:3128"));
+        assert!(parse_proxy_flag("not a url").is_none());
     }
 }
 

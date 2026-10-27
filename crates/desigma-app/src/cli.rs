@@ -74,6 +74,16 @@ pub struct Options {
     /// `--dither` of `--export-animation`: Floyd-Steinberg dithering for GIF output (less banding
     /// on gradients, larger file).
     pub dither: bool,
+    /// `--export-code FILE --out DIR`: write FILE's selected frame (or `--select`) as a code project.
+    pub export_code: Option<PathBuf>,
+    /// Code target of `--export-code`: `html`, `react`, `tailwind`, `swiftui` or `compose`.
+    pub code: Option<String>,
+    /// React only: style with Tailwind classes instead of inline styles.
+    pub code_tailwind: bool,
+    /// Skip `tokens.css`.
+    pub no_tokens: bool,
+    /// Proxy for this run: `off`, `system`, or a URL (`http://host:port`).
+    pub proxy: Option<String>,
     pub help: bool,
     /// Print `desigma <version>` and exit.
     pub version: bool,
@@ -174,6 +184,17 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
                 o.fps = Some(v.trim().parse::<u32>().ok().filter(|f| (1..=120).contains(f)).ok_or_else(|| format!("invalid fps '{v}' (expected 1..120)"))?);
             }
             "--dither" => o.dither = true,
+            "--export-code" => o.export_code = Some(it.next().ok_or("--export-code needs a .desigma file")?.into()),
+            "--code" => {
+                let t = it.next().ok_or("--code needs html, react, tailwind, swiftui or compose")?;
+                if desigma_export::CodeTarget::parse(&t).is_none() {
+                    return Err(format!("unknown code target '{t}' (expected html, react, tailwind, swiftui or compose)"));
+                }
+                o.code = Some(t);
+            }
+            "--code-tailwind" => o.code_tailwind = true,
+            "--no-tokens" => o.no_tokens = true,
+            "--proxy" => o.proxy = Some(it.next().ok_or("--proxy needs off, system or a URL")?),
             "--select" => o.select = Some(it.next().ok_or("--select needs a layer name")?),
             "--menu" => o.menu = Some(it.next().ok_or("--menu needs a name (main, main/File, shape, palette)")?),
             "--fixture" => o.fixture = Some(it.next().ok_or("--fixture needs a name (no-selection)")?),
@@ -250,15 +271,36 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
             }
         }
     }
+    if o.export_animation.is_some() && o.export_code.is_some() {
+        return Err("--export-animation and --export-code cannot be used together".into());
+    }
     if o.export_animation.is_none() {
         if let Some(sc) = o.scale.filter(|s| *s < 1.0) {
             return Err(format!("invalid scale '{sc}' (expected 1..4, e.g. 2)"));
         }
-        if o.format.is_some() || o.out.is_some() || o.fps.is_some() || o.dither {
-            return Err("--format, --out, --fps and --dither need --export-animation FILE".into());
+        if o.format.is_some() || o.fps.is_some() || o.dither {
+            return Err("--format, --fps and --dither need --export-animation FILE".into());
         }
     } else if o.out.is_none() {
         return Err("--export-animation needs --out PATH".into());
+    }
+    if o.export_code.is_some() {
+        if o.out.is_none() {
+            return Err("--export-code needs --out DIR".into());
+        }
+        if o.format.is_some() || o.fps.is_some() || o.dither {
+            return Err("--format, --fps and --dither are for --export-animation".into());
+        }
+    } else {
+        if o.code.is_some() || o.code_tailwind || o.no_tokens {
+            return Err("--code, --code-tailwind and --no-tokens need --export-code FILE".into());
+        }
+        if o.out.is_some() && o.export_animation.is_none() {
+            return Err("--out needs --export-animation FILE or --export-code FILE".into());
+        }
+    }
+    if o.code_tailwind && o.code.as_deref().and_then(desigma_export::CodeTarget::parse) != Some(desigma_export::CodeTarget::React) {
+        return Err("--code-tailwind needs --code react".into());
     }
     Ok(o)
 }
@@ -275,6 +317,9 @@ pub const USAGE: &str = "usage: desigma [FILE|desigma://join/LINK] [--screenshot
   --motion   open Motion mode with a demo animation on the selected layer
   --seed-library  write the showcase sample files (a project with three files) into DIR and exit
   --find     open the Find and replace panel searching for TEXT (--replace-with TEXT shows the replace row)
+  --export-code FILE  write the frame named by --select (or the first frame) as a code project in --out DIR and exit:
+               --code html|react|tailwind|swiftui|compose [--code-tailwind] [--no-tokens]
+  --proxy    network proxy for this run: off, system, or a URL (http://host:port); overrides Preferences → Network proxy
   --export-animation FILE  render FILE's Motion animation (first animated page, or the layer named by --select) and exit:
                --out PATH [--format gif|webm|png] [--fps N] [--scale 0.1..4] [--dither]; png writes a folder, or a .zip when PATH ends in .zip
   --version  print the version and exit";
@@ -421,6 +466,27 @@ mod tests {
         assert!(p(&["--version"]).unwrap().version && p(&["-V"]).unwrap().version);
         assert!(!p(&[]).unwrap().version);
         assert!(p(&["--panel", "updater"]).is_ok() && p(&["--panel", "updater-banner"]).is_ok());
+    }
+
+    #[test]
+    fn parses_export_code() {
+        let o = p(&["--export-code", "a.desigma", "--out", "dist", "--code", "react", "--code-tailwind"]).unwrap();
+        assert_eq!(o.export_code, Some("a.desigma".into()));
+        assert_eq!(o.out, Some("dist".into()));
+        assert_eq!(o.code.as_deref(), Some("react"));
+        assert!(o.code_tailwind);
+        assert!(p(&["--export-code", "a.desigma"]).is_err(), "--out is required");
+        assert!(p(&["--export-code", "a", "--out", "d", "--code", "cobol"]).is_err());
+        assert!(p(&["--code", "html"]).is_err(), "--code needs --export-code");
+        assert!(p(&["--export-code", "a", "--out", "d", "--code-tailwind"]).is_err(), "needs --code react");
+        assert!(p(&["--export-code", "a", "--out", "d", "--export-animation", "b", "--out", "c"]).is_err());
+    }
+
+    #[test]
+    fn parses_proxy() {
+        assert_eq!(p(&["--proxy", "off"]).unwrap().proxy.as_deref(), Some("off"));
+        assert_eq!(p(&["--proxy", "http://127.0.0.1:3128"]).unwrap().proxy.as_deref(), Some("http://127.0.0.1:3128"));
+        assert!(p(&["--proxy"]).is_err());
     }
 
     #[test]

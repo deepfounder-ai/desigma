@@ -10,6 +10,7 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 base64 = "0.22"
 desigma-doc.workspace = true
 desigma-render.workspace = true
+desigma-fonts = { path = "../desigma-fonts", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tiny-skia.workspace = true
 # Animation export (GIF, WebM/AV1): all pure Rust. rav1e is built without its `asm` feature (that

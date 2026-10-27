@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = []
 # Blocking Figma REST client (`rest` module). Needs a user-supplied token at runtime.
-net = ["dep:ureq"]
+net = ["dep:ureq", "dep:desigma-http"]
 
 [dependencies]
 desigma-doc.workspace = true
@@ -19,6 +19,7 @@ flate2 = "1"
 ruzstd = "0.9"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 ureq = { version = "2", optional = true }
+desigma-http = { workspace = true, optional = true }
 
 [dev-dependencies]
 desigma-render.workspace = true

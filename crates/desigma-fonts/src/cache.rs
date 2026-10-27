@@ -10,25 +10,21 @@ pub trait Fetch: Send + Sync {
 }
 
 #[cfg(feature = "net")]
-struct UreqFetch {
-    agent: ureq::Agent,
-}
-
-#[cfg(feature = "net")]
-impl UreqFetch {
-    fn new() -> Self {
-        use std::time::Duration;
-        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).timeout(Duration::from_secs(60)).user_agent("desigma-fonts").build();
-        Self { agent }
-    }
-}
+struct UreqFetch;
 
 #[cfg(feature = "net")]
 impl Fetch for UreqFetch {
     fn get(&self, url: &str) -> Result<Vec<u8>, FontError> {
         use std::io::Read;
         const MAX: u64 = 64 * 1024 * 1024;
-        match self.agent.get(url).call() {
+        // One agent per request: the proxy and its bypass list depend on the URL.
+        let opts = desigma_http::AgentOptions {
+            timeout_connect: std::time::Duration::from_secs(10),
+            timeout: Some(std::time::Duration::from_secs(60)),
+            ..Default::default()
+        }
+        .user_agent("desigma-fonts");
+        match desigma_http::agent_with(&opts, url).get(url).call() {
             Ok(resp) => {
                 let mut buf = Vec::new();
                 resp.into_reader().take(MAX).read_to_end(&mut buf).map_err(|e| FontError::Network(e.to_string()))?;
@@ -88,7 +84,7 @@ impl FontCache {
     /// Cache rooted at `dir` (used by tests).
     pub fn with_dir(dir: impl Into<PathBuf>) -> Self {
         #[cfg(feature = "net")]
-        let fetcher: Option<Box<dyn Fetch>> = Some(Box::new(UreqFetch::new()));
+        let fetcher: Option<Box<dyn Fetch>> = Some(Box::new(UreqFetch));
         #[cfg(not(feature = "net"))]
         let fetcher: Option<Box<dyn Fetch>> = None;
         Self { dir: dir.into(), fetcher }

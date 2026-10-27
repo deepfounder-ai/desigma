@@ -60,7 +60,7 @@ fn cap(w: &str) -> String {
     }
 }
 
-pub(crate) fn pascal(s: &str) -> String {
+pub fn pascal(s: &str) -> String {
     let p: String = words(s).iter().map(|w| cap(w)).collect();
     match p.chars().next() {
         None => "Layer".into(),
@@ -69,7 +69,7 @@ pub(crate) fn pascal(s: &str) -> String {
     }
 }
 
-pub(crate) fn camel(s: &str) -> String {
+pub fn camel(s: &str) -> String {
     let p = pascal(s);
     let mut c = p.chars();
     match c.next() {
@@ -78,7 +78,7 @@ pub(crate) fn camel(s: &str) -> String {
     }
 }
 
-pub(crate) fn kebab(s: &str) -> String {
+pub fn kebab(s: &str) -> String {
     let w: Vec<String> = words(s).iter().map(|w| w.to_lowercase()).collect();
     if w.is_empty() {
         "layer".into()
@@ -87,13 +87,13 @@ pub(crate) fn kebab(s: &str) -> String {
     }
 }
 
-pub(crate) fn snake(s: &str) -> String {
+pub fn snake(s: &str) -> String {
     kebab(s).replace('-', "_")
 }
 
 /// Name of the view/component a node becomes: the component for instances (the set for
 /// variants), else the node's own name.
-pub(crate) fn view_name(doc: &Document, n: &Node) -> String {
+pub fn view_name(doc: &Document, n: &Node) -> String {
     if let Some(c) = instance_component(n).and_then(|c| doc.get(c)) {
         let set = c.parent.and_then(|p| doc.get(p)).filter(|p| matches!(p.kind, NodeKind::ComponentSet(_)));
         return pascal(&set.unwrap_or(c).name);
@@ -101,7 +101,7 @@ pub(crate) fn view_name(doc: &Document, n: &Node) -> String {
     pascal(&n.name)
 }
 
-pub(crate) fn bound<'a>(doc: &'a Document, n: &Node, key: &str) -> Option<&'a Variable> {
+pub fn bound<'a>(doc: &'a Document, n: &Node, key: &str) -> Option<&'a Variable> {
     doc.variables.get(n.variables.bindings.get(key)?)
 }
 
@@ -124,7 +124,7 @@ pub fn css_var(v: &Variable) -> String {
 }
 
 /// camelCase token name, dropping a leading `color` segment (`Color/Brand/Primary` -> `brandPrimary`).
-pub(crate) fn token_camel(v: &Variable, drop_color: bool) -> String {
+pub fn token_camel(v: &Variable, drop_color: bool) -> String {
     let mut s = segments(v);
     if drop_color && s.len() > 1 && (s[0] == "color" || s[0] == "colors") {
         s.remove(0);
@@ -132,15 +132,15 @@ pub(crate) fn token_camel(v: &Variable, drop_color: bool) -> String {
     camel(&s.join(" "))
 }
 
-pub(crate) fn first_paint(paints: &[Paint]) -> Option<&Paint> {
+pub fn first_paint(paints: &[Paint]) -> Option<&Paint> {
     paints.iter().rev().find(|p| p.visible && p.opacity > 0.0)
 }
 
-pub(crate) fn visible_children<'a>(doc: &'a Document, n: &Node) -> Vec<&'a Node> {
+pub fn visible_children<'a>(doc: &'a Document, n: &Node) -> Vec<&'a Node> {
     n.children.iter().filter_map(|c| doc.get(*c)).filter(|c| c.visible).collect()
 }
 
-pub(crate) fn is_vector_kind(k: &NodeKind) -> bool {
+pub fn is_vector_kind(k: &NodeKind) -> bool {
     matches!(k, NodeKind::Vector { .. } | NodeKind::BooleanOp(_) | NodeKind::Star { .. } | NodeKind::Polygon { .. })
 }
 
@@ -298,7 +298,7 @@ pub(crate) fn rotation_deg(n: &Node) -> f32 {
     }
 }
 
-pub(crate) fn text_of(n: &Node) -> Option<&TextProps> {
+pub fn text_of(n: &Node) -> Option<&TextProps> {
     match &n.kind {
         NodeKind::Text(t) => Some(t),
         _ => None,
@@ -306,7 +306,7 @@ pub(crate) fn text_of(n: &Node) -> Option<&TextProps> {
 }
 
 /// Resolved `"` / `\` / newline escaping for Swift and Kotlin string literals.
-pub(crate) fn quote(s: &str) -> String {
+pub fn quote(s: &str) -> String {
     let mut o = String::from("\"");
     for c in s.chars() {
         match c {
@@ -355,6 +355,10 @@ pub(crate) fn apply_css_vars(doc: &Document, n: &Node, lines: &mut Vec<String>) 
         return;
     }
     let b = |key: &str| bound(doc, n, key).map(css_var);
+    // A number token (`Space/Screen` = 20) is stored unitless, so a length
+    // property needs `calc(var(--space-screen) * 1px)`: a bare `var()` there is
+    // invalid CSS and the declaration is dropped.
+    let len = |key: &str| bound(doc, n, key).map(|v| if v.kind == VariableKind::Number { format!("calc({} * 1px)", css_var(v)) } else { css_var(v) });
     let is_text = matches!(n.kind, NodeKind::Text(_));
     let visible_fills = if is_text {
         text_of(n).map(|t| t.style.fills.iter().filter(|p| p.visible).count()).unwrap_or(0)
@@ -394,7 +398,9 @@ pub(crate) fn apply_css_vars(doc: &Document, n: &Node, lines: &mut Vec<String>) 
         ("lineHeight", "line-height"),
         ("letterSpacing", "letter-spacing"),
     ] {
-        if let Some(v) = b(key) {
+        // `font-weight` is a unitless number even when the token is one.
+        let value = if prop == "font-weight" { b(key) } else { len(key) };
+        if let Some(v) = value {
             if has_decl(lines, prop) {
                 set_decl(lines, prop, v);
             }
@@ -403,7 +409,7 @@ pub(crate) fn apply_css_vars(doc: &Document, n: &Node, lines: &mut Vec<String>) 
     if let Some(v) = b("opacity") {
         set_decl(lines, "opacity", format!("calc({} / 100)", v.trim()));
     }
-    if let Some(v) = b("itemSpacing") {
+    if let Some(v) = len("itemSpacing") {
         if has_decl(lines, "gap") {
             set_decl(lines, "gap", v);
         }
@@ -412,7 +418,7 @@ pub(crate) fn apply_css_vars(doc: &Document, n: &Node, lines: &mut Vec<String>) 
     let sides = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"];
     if sides.iter().any(|k| bound(doc, n, k).is_some()) {
         if let Some(al) = n.kind.frame_props().and_then(|f| f.auto_layout) {
-            let vals: Vec<String> = sides.iter().enumerate().map(|(i, k)| b(k).unwrap_or_else(|| format!("{}px", num(al.padding[i])))).collect();
+            let vals: Vec<String> = sides.iter().enumerate().map(|(i, k)| len(k).unwrap_or_else(|| format!("{}px", num(al.padding[i])))).collect();
             lines.retain(|l| !l.starts_with("padding: "));
             let value = css_box(&vals);
             // keep declaration order: padding follows the size declarations
@@ -425,7 +431,7 @@ pub(crate) fn apply_css_vars(doc: &Document, n: &Node, lines: &mut Vec<String>) 
     }
     let corners = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
     if corners.iter().any(|k| bound(doc, n, k).is_some()) {
-        let vals: Vec<String> = corners.iter().enumerate().map(|(i, k)| b(k).unwrap_or_else(|| format!("{}px", num(n.corner_radii[i])))).collect();
+        let vals: Vec<String> = corners.iter().enumerate().map(|(i, k)| len(k).unwrap_or_else(|| format!("{}px", num(n.corner_radii[i])))).collect();
         set_decl(lines, "border-radius", css_box(&vals));
     }
 }
@@ -630,7 +636,7 @@ mod tests {
         let row = d.get(card).unwrap().children[2];
         let css = crate::css_for(&d, row);
         assert!(css.contains("background: var(--color-primary);"), "{css}");
-        assert!(css.contains("gap: var(--spacing-md);"), "{css}");
+        assert!(css.contains("gap: calc(var(--spacing-md) * 1px);"), "{css}");
         let body = d.get(card).unwrap().children[1];
         assert!(crate::css_for(&d, body).contains("color: var(--color-text-muted);"));
         // unbound properties keep their literal values

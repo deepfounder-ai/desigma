@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["net"]
 # Blocking HTTP fetch of fonts from the Fontsource API.
-net = ["dep:ureq"]
+net = ["dep:ureq", "dep:desigma-http"]
 
 [dependencies]
 desigma-doc.workspace = true
@@ -17,3 +17,4 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 ureq = { version = "2", optional = true }
+desigma-http = { workspace = true, optional = true }

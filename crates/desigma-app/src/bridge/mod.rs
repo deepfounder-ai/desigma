@@ -233,6 +233,17 @@ impl App {
                 std::fs::write(&a.path, png).map_err(|e| format!("Cannot write PNG: {e}"))?;
                 Ok(json!({"path":a.path,"width":width,"height":height}))
             }
+            "desigma_export_code" => {
+                let a: engine::ExportCodeArgs = parse(args)?;
+                let dir = std::path::PathBuf::from(&a.path);
+                if !dir.is_absolute() {
+                    return Err("Export path must be absolute".into());
+                }
+                let project = engine::export_code(&AppHost(self), &a)?;
+                let files = project.write_to(&dir)?;
+                self.show_toast(format!("Exported {} files to {}", files.len(), dir.display()), false);
+                Ok(json!({"path":dir,"files":files.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()}))
+            }
             "desigma_export_animation" => {
                 let a: desigma_mcp::motion::ExportAnimArgs = parse(args)?;
                 let path = std::path::PathBuf::from(&a.path);
