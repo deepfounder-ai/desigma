@@ -362,6 +362,25 @@ desigma-diff compare reference.png actual.png --out diff.png   # pixel-compare t
 
 Build the local server with `cargo build --locked -p desigma-mcp`, then configure your MCP client to launch `desigma-mcp --workspace /path/to/designs`. It provides 16 tools for importing files, inspecting layers and tokens, generating code, editing with undo/redo, and saving a new `.desigma` file. With the editor's agent bridge on (Preferences → **Allow MCP agents to control this editor**, or launch with `desigma --bridge`), the same tools edit the document that is open on screen and share its Undo; a status pill shows while the bridge is on. Without a running editor the server works on an isolated file session as before. See the [setup and tool reference](crates/desigma-mcp/README.md).
 
+## Agents panel
+
+Open **Agents** from the editor rail (or `desigma --panel agents`) to chat with a local agent server from inside the editor. The app is not tied to any particular agent program: it only needs a loopback HTTP server that joins the file's shared session (Share → Copy link) and answers the small JSON contract below. The URL comes from `DESIGMA_AGENTS_URL`, else Preferences → **Agent server URL…** (saved in `settings.json` beside your name), else `http://127.0.0.1:47900`. While the server is not reachable the panel says so and shows the command to start one.
+
+The panel polls `GET /api/state` every 2 s and the open chat every second while one of its runs is active, all on a background thread. The **Chat** tab has the chat selector (+ New), the messages (agent names in their presence colour, tool calls dimmed), the composer with model, parallel agents (1–6, split work or side by side), iterate (layout or style, 1–6 variants), a "use selection as context" toggle, Send (Enter) and Stop; under it an **Import from web** row (URL and the widths 390 / 768 / 1180 / 1440). The **Notes** tab lists the file's comment threads as tasks with their status dot (todo / doing / done), the layer they are pinned to, and **Run** / **Resolve**. The people strip at the top shows everyone in the session with their colours.
+
+| request | used for |
+|---|---|
+| `GET /api/state` | `joined`, `doc_name`, `name`, `people[{name, color, is_agent, page_name, selection[{name}]}]`, `selection{nodes[{name}]}`, `comments[{thread_id, text, status, resolved, author, anchor{node_name, page_name}, messages[]}]`, `chats[{id, title, active, runs[]}]`, `models[{id, label}]`, `default_model`, `flows[{thread_id, agent}]` |
+| `GET /api/chat/{id}` | `{id, active, thread_id?, messages[{role, kind, text, agent?, author?, summary?, exit_code?, is_error?, cost_usd?, agents[{name}]}]}` |
+| `POST /api/send` | `{prompt, model, parallel{count, mode: split\|side_by_side}, iterate{mode: layout\|style, variants}?, context{selection, files}, chat_id?}` → `{chat_id}` |
+| `POST /api/stop` | `{run_id}` |
+| `POST /api/chat/new` | `{title}` → `{id}` |
+| `POST /api/comment/{thread}/send` | `{model}` → `{agent}` (runs an agent on a note; also how a thread-linked chat is replied to) |
+| `POST /api/comment/{thread}/resolve` | `{resolved}` |
+| `POST /api/import` | `{url, widths[], mode}` → `{frames[{name}]}` |
+
+Errors come back as `{"error": "…"}`; everything else in an answer is ignored, so a server may offer more. Screenshots: `desigma file.desigma --panel agents --screenshot a.png` (the first state fetch runs before the frame) and `--panel agents-notes` for the Notes tab.
+
 ## Native plugin installation
 
 Open **Plugins** from the editor rail or main menu, choose **Install plugin**, and paste a manifest URL from [desigma-plugins](https://github.com/deepfounder-ai/desigma-plugins). GitHub `blob` and raw URLs are supported, for example:
