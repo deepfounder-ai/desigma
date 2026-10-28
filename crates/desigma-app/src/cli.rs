@@ -90,9 +90,10 @@ impl Options {
 /// Values of `--panel`: `variables` / `variables-floating` open the local variables view,
 /// `libraries` the Libraries modal, `updater` / `updater-banner` check the update feed (`DESIGMA_UPDATE_URL`)
 /// and show the update dialog or banner; the others are inspector popups opened on the selection for screenshots.
-pub const PANELS: [&str; 28] = [
+pub const PANELS: [&str; 29] = [
     "share",
     "collab",
+    "comments",
     "plugins",
     "plugin-install",
     "interaction",
@@ -263,7 +264,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
     Ok(o)
 }
 
-pub const USAGE: &str = "usage: desigma [FILE|desigma://join/LINK] [--screenshot OUT.png] [--size WxH] [--scale FACTOR] [--select LAYER|none] [--menu main|main/File|shape|palette] [--panel interaction|present-variables|variables|variables-floating|libraries|picker|picker-page|fill-d9|picker-gradient|effects-menu|stroke-settings|type-details|effect-noise|effect-texture|effect-glass|version-history|dev-annotate|dev-compare|motion-inspector|motion-easing|motion-library|motion-clip|updater|updater-banner|share|collab]\n               [--zoom PERCENT] [--rulers] [--grid] [--gpu] [--bridge] [--home] [--library DIR] [--layout-grid grid|columns|rows] [--edit-text LAYER [--select-text START-END]]\n  FILE  .fig, .pen (Pencil), .json (Figma REST or native), .svg or .desigma; without a file the projects home screen opens
+pub const USAGE: &str = "usage: desigma [FILE|desigma://join/LINK] [--screenshot OUT.png] [--size WxH] [--scale FACTOR] [--select LAYER|none] [--menu main|main/File|shape|palette] [--panel interaction|present-variables|variables|variables-floating|libraries|picker|picker-page|fill-d9|picker-gradient|effects-menu|stroke-settings|type-details|effect-noise|effect-texture|effect-glass|version-history|dev-annotate|dev-compare|motion-inspector|motion-easing|motion-library|motion-clip|updater|updater-banner|share|collab|comments]\n               [--zoom PERCENT] [--rulers] [--grid] [--gpu] [--bridge] [--home] [--library DIR] [--layout-grid grid|columns|rows] [--edit-text LAYER [--select-text START-END]]\n  FILE  .fig, .pen (Pencil), .json (Figma REST or native), .svg or .desigma; without a file the projects home screen opens
   desigma://join/LINK  open the Join session dialog with a shared link filled in
   --scale    with --screenshot: device pixel ratio (2 writes a PNG twice --size, rendered crisp rather than upscaled)
   --home     show the home screen (also in --screenshot mode)
@@ -317,6 +318,7 @@ mod tests {
         assert!(p(&["--dev", "cobol"]).is_err());
         assert!(p(&["--dev"]).is_err());
         assert!(p(&["--panel", "dev-compare"]).is_ok());
+        assert!(p(&["--panel", "comments"]).is_ok());
     }
 
     #[test]

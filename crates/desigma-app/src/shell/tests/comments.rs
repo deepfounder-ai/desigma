@@ -337,3 +337,28 @@ fn run_action(s: &mut Sim, a: crate::panels::menus::Action) {
     crate::panels::menus::run(&mut s.shell.app, &ctx, a);
     s.frame(vec![]);
 }
+
+#[test]
+fn task_markers_cycle_from_the_popover_and_the_panel() {
+    use model::TaskStatus::*;
+    let mut s = sim();
+    let id = post(&mut s, "Welcome", "[ ] Tighten the hero @ada");
+    let status = |s: &Sim| model::task_status(&s.app().doc.comments[0]);
+    assert_eq!(status(&s), Some(Todo));
+    s.click(bubble(&s, &id));
+    assert_eq!(s.app().comments.open.as_deref(), Some(id.as_str()));
+    let st = s.rect_of("comment-task-status");
+    s.click(st.center());
+    assert_eq!(status(&s), Some(Doing), "the header control moves the task on");
+    assert_eq!(s.app().comments.open.as_deref(), Some(id.as_str()), "the popover stays open");
+    s.key(Key::Escape);
+    s.frame(vec![]);
+    let mark = s.rect_of("comment-mark-[/] Tighten the hero @ad");
+    s.click(mark.center());
+    assert_eq!(status(&s), Some(Done), "the panel's Mark done rewrites the marker");
+    assert_eq!(s.app().doc.comments[0].messages[0].text, "[x] Tighten the hero @ada");
+    assert!(s.app().comments.open.is_none(), "the button did not open the thread");
+    s.rect_of("comment-mark-[x] Tighten the hero @ad");
+    s.shell.app.undo();
+    assert_eq!(status(&s), Some(Doing), "each status change is one undo step");
+}

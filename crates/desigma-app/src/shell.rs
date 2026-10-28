@@ -235,6 +235,7 @@ impl Shell {
             Some(p @ ("dev-annotate" | "dev-compare")) => crate::dev::preset::panel(&mut app, p),
             Some("share") => app.open_share(),
             Some("collab") => crate::collab::preview(&mut app),
+            Some("comments") => crate::comments::preset(&mut app),
             Some(p @ ("updater" | "updater-banner")) => crate::updater::preset(&mut app, p),
             Some(panel @ ("variables" | "variables-floating")) => {
                 app.vars.full = panel == "variables";

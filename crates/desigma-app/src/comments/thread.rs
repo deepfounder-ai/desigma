@@ -110,6 +110,7 @@ fn composer(app: &mut App, ctx: &Context, canvas: Rect) -> Option<Shown> {
 
 enum Act {
     Resolve(bool),
+    Task(model::TaskStatus),
     Close,
     Reply(String),
     OpenMenu(String, Rect),
@@ -133,14 +134,17 @@ fn open_thread(app: &mut App, ctx: &Context, canvas: Rect, id: &str) -> Option<S
     let mut galleys = Vec::new();
     let mut heights = Vec::new();
     let mut edit_box_h = 0.0;
-    for m in &thread.messages {
+    let task = model::task_status(&thread);
+    for (i, m) in thread.messages.iter().enumerate() {
         let is_edit = editing.as_ref().is_some_and(|(c, _)| *c == m.id);
         if is_edit {
             edit_box_h = ui::box_height(&mp, editing.as_ref().map(|e| e.1.as_str()).unwrap_or(""), inner_w);
             galleys.push(None);
             heights.push(theme::COMMENT_AVATAR + ROW_GAP + edit_box_h + ROW_GAP + theme::COMMENT_BTN_H + pad);
         } else {
-            let g = mp.layout(m.text.clone(), theme::font_body(), theme::TEXT, text_w);
+            // the opening message shows its task marker as the header status, not as text
+            let text = if i == 0 { model::split_marker(&m.text).1 } else { m.text.as_str() };
+            let g = mp.layout_job(ui::mention_job(text, theme::font_body(), theme::TEXT, text_w));
             heights.push(22.0 + g.size().y + pad);
             galleys.push(Some(g));
         }
@@ -169,6 +173,18 @@ fn open_thread(app: &mut App, ctx: &Context, canvas: Rect, id: &str) -> Option<S
         let hr = Rect::from_min_size(rect.min, Vec2::new(w, theme::COMMENT_HEADER_H));
         if thread.resolved {
             p.text(Pos2::new(left, hr.center().y), Align2::LEFT_CENTER, "Resolved", theme::font_body(), theme::TEXT_SECONDARY);
+        } else if let Some(s) = task {
+            // task status; a click moves it on (to do → in progress → done)
+            let lw = widgets::text_width(&p, s.label(), &theme::font_body());
+            let sr = Rect::from_min_size(Pos2::new(left - 4.0, hr.center().y - 12.0), Vec2::new(lw + 26.0, 24.0));
+            let resp = ui.interact(sr, ui.id().with("thread-task"), egui::Sense::click());
+            widgets::button_bg(&p, sr, &resp, false, theme::cr(theme::RADIUS_MEDIUM));
+            ui::status_dot(&p, Pos2::new(sr.left() + 10.0, sr.center().y), s);
+            p.text(Pos2::new(sr.left() + 18.0, sr.center().y), Align2::LEFT_CENTER, s.label(), theme::font_body(), theme::TEXT);
+            widgets::record(ui, "comment-task-status", sr);
+            if resp.on_hover_text(format!("Mark {}", s.next().label().to_lowercase())).clicked() {
+                acts.push(Act::Task(s.next()));
+            }
         }
         let btn = |i: f32| Rect::from_min_size(Pos2::new(rect.right() - 8.0 - 24.0 * (i + 1.0) - 4.0 * i, hr.center().y - 12.0), Vec2::splat(24.0));
         if widgets::icon_button(ui, btn(0.0), "thread-close", Icon::Close, false, "Close").clicked() {
@@ -260,6 +276,9 @@ fn open_thread(app: &mut App, ctx: &Context, canvas: Rect, id: &str) -> Option<S
                 app.resolve_comment_thread(id, r);
                 app.comments.close_popovers();
                 return None;
+            }
+            Act::Task(s) => {
+                app.set_comment_task(id, s);
             }
             Act::Reply(text) => {
                 if app.reply_comment(id, &text) {

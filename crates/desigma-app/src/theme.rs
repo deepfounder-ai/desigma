@@ -370,6 +370,9 @@ pub const COMMENT_PIN_HIT_PAD: f32 = 2.0;
 pub const COMMENT_PIN_RESOLVED: Color32 = rgb(0x757575);
 /// Avatar colours picked from the author's name.
 pub const AVATAR_COLORS: [Color32; 6] = [rgb(0xF24822), rgb(0xFFA629), rgb(0x14AE5C), rgb(0x0C8CE9), rgb(0x9747FF), rgb(0xEE46BC)];
+/// Task pins: the palette's amber while in progress, green when done (to do keeps the author colour).
+pub const COMMENT_TASK_DOING: Color32 = AVATAR_COLORS[1];
+pub const COMMENT_TASK_DONE: Color32 = AVATAR_COLORS[2];
 pub const COMMENT_AVATAR: f32 = 24.0;
 /// Thread popover: width, gap to its pin, inner padding, header height.
 pub const COMMENT_POP_W: f32 = 300.0;

@@ -1,13 +1,13 @@
 //! The right panel in comment mode: every thread, filtered by page, status and text.
 
-use super::{model, ui};
+use super::model::{self, TaskStatus};
+use super::ui;
 use crate::app::App;
 use crate::canvas::tools::Tool;
 use crate::home::time::relative;
 use crate::icons::Icon;
 use crate::theme;
 use crate::widgets::{self, hline};
-use egui::text::LayoutJob;
 use egui::{Align2, Id, Pos2, Rect, Sense, Stroke, StrokeKind, TextEdit, Ui, Vec2};
 
 const SIDE: f32 = 12.0;
@@ -120,27 +120,30 @@ pub fn show(app: &mut App, ui: &mut Ui, rect: Rect) {
         h: f32,
         replies: usize,
         page: String,
+        task: Option<TaskStatus>,
     }
     let cards: Vec<Card> = threads
         .iter()
         .map(|t| {
             let first = &t.messages[0];
-            let mut job = LayoutJob::simple(first.text.clone(), font.clone(), theme::TEXT, text_w);
+            let (task, body) = model::split_marker(&first.text);
+            let mut job = ui::mention_job(body, font.clone(), theme::TEXT, text_w);
             job.wrap.max_rows = ROWS_MAX;
             job.wrap.overflow_character = Some('…');
             let galley = p.layout_job(job);
             let replies = t.messages.len() - 1;
             let page = model::thread_page(&app.doc, t);
             let page_name = if app.comments.all_pages { app.doc.get(page).map(|n| n.name.clone()).unwrap_or_default() } else { String::new() };
-            let has_footer = replies > 0 || !page_name.is_empty();
+            let has_footer = replies > 0 || !page_name.is_empty() || task.is_some();
             let h = theme::COMMENT_CARD_PAD * 2.0 + AVATAR + 6.0 + galley.size().y + if has_footer { 18.0 } else { 0.0 };
-            Card { id: t.id.clone(), galley, h, replies, page: page_name }
+            Card { id: t.id.clone(), galley, h, replies, page: page_name, task }
         })
         .collect();
     let content_h: f32 = cards.iter().map(|c| c.h + 4.0).sum::<f32>() + 8.0;
     crate::panels::wheel_scroll(ui, list, &mut app.comments.scroll, content_h);
     let scroll = app.comments.scroll;
     let mut goto: Option<String> = None;
+    let mut mark: Option<(String, TaskStatus)> = None;
     let open = app.comments.open.clone();
     crate::panels::clipped(ui, list, |ui| {
         let p = ui.painter().clone();
@@ -169,7 +172,30 @@ pub fn show(app: &mut App, ui: &mut Ui, rect: Rect) {
             widgets::text_on_baseline(&p, nr.right() + 8.0, ay + AVATAR / 2.0 + 4.0, &stamp, theme::font_small(), theme::TEXT_TERTIARY);
             let ty = ay + AVATAR + 6.0;
             p.galley(Pos2::new(ax, ty), c.galley.clone(), theme::TEXT);
+            // footer: status dot and label, replies, page; "Mark done" / "Reopen" on the right
+            let fy = ty + c.galley.size().y + 13.0;
+            let mut lx = ax;
+            let mut right = r.right() - theme::COMMENT_CARD_PAD;
             let mut parts = Vec::new();
+            let mut marked = false;
+            if let Some(s) = c.task {
+                ui::status_dot(&p, Pos2::new(ax + 4.0, fy - 4.0), s);
+                lx += 14.0;
+                parts.push(s.label().to_string());
+                let label = if s == TaskStatus::Done { "Reopen" } else { "Mark done" };
+                let lw = widgets::text_width(&p, label, &theme::font_small_strong());
+                let br = Rect::from_min_max(Pos2::new(right - lw - 8.0, fy - 14.0), Pos2::new(right, fy + 5.0));
+                let bresp = ui.interact(br, ui.id().with(("comment-mark", &c.id)), Sense::click());
+                widgets::button_bg(&p, br, &bresp, false, theme::cr(theme::RADIUS_SMALL));
+                let col = if bresp.hovered() { theme::TEXT } else { theme::TEXT_BRAND };
+                widgets::text_on_baseline(&p, br.left() + 4.0, fy, label, theme::font_small_strong(), col);
+                widgets::record(ui, &format!("comment-mark-{}", first.text.chars().take(24).collect::<String>()), br);
+                if bresp.clicked() {
+                    mark = Some((c.id.clone(), if s == TaskStatus::Done { TaskStatus::Todo } else { TaskStatus::Done }));
+                    marked = true;
+                }
+                right = br.left() - 8.0;
+            }
             if c.replies > 0 {
                 parts.push(format!("{} {}", c.replies, if c.replies == 1 { "reply" } else { "replies" }));
             }
@@ -177,11 +203,11 @@ pub fn show(app: &mut App, ui: &mut Ui, rect: Rect) {
                 parts.push(c.page.clone());
             }
             if !parts.is_empty() {
-                let line = widgets::elide(&p, &parts.join("  \u{b7}  "), &theme::font_small(), text_w);
-                widgets::text_on_baseline(&p, ax, ty + c.galley.size().y + 13.0, &line, theme::font_small(), theme::TEXT_SECONDARY);
+                let line = widgets::elide(&p, &parts.join("  \u{b7}  "), &theme::font_small(), (right - lx).max(0.0));
+                widgets::text_on_baseline(&p, lx, fy, &line, theme::font_small(), theme::TEXT_SECONDARY);
             }
             widgets::record(ui, &format!("comment-card-{}", first.text.chars().take(24).collect::<String>()), r);
-            if resp.clicked() {
+            if resp.clicked() && !marked {
                 goto = Some(c.id.clone());
             }
         }
@@ -189,5 +215,8 @@ pub fn show(app: &mut App, ui: &mut Ui, rect: Rect) {
     crate::panels::scrollbar(ui, list, scroll, content_h);
     if let Some(id) = goto {
         app.goto_comment(&id);
+    }
+    if let Some((id, status)) = mark {
+        app.set_comment_task(&id, status);
     }
 }

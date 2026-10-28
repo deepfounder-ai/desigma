@@ -1,10 +1,11 @@
 //! Small painted widgets shared by the comment pins, popovers and the panel.
 
-use super::model;
+use super::model::{self, TaskStatus};
 use crate::icons::{self, Icon};
 use crate::theme;
 use crate::widgets;
-use egui::{Align, Align2, Color32, Id, Margin, Painter, Pos2, Rect, Response, Sense, Stroke, StrokeKind, TextEdit, Ui, Vec2};
+use egui::text::{LayoutJob, TextFormat};
+use egui::{Align, Align2, Color32, FontId, Id, Margin, Painter, Pos2, Rect, Response, Sense, Stroke, StrokeKind, TextEdit, Ui, Vec2};
 
 pub fn avatar_color(name: &str) -> Color32 {
     theme::AVATAR_COLORS[model::avatar_index(name, theme::AVATAR_COLORS.len())]
@@ -33,14 +34,26 @@ pub fn pin_rect(tip: Pos2) -> Rect {
     Rect::from_min_max(Pos2::new(tip.x, tip.y - theme::COMMENT_PIN), Pos2::new(tip.x + theme::COMMENT_PIN, tip.y))
 }
 
-/// A round bubble with its bottom-left corner squared off to the tip, as in Figma.
-pub fn pin(p: &Painter, tip: Pos2, author: &str, style: PinStyle) {
+/// Fill of a task's pin or status dot; `None` for a to-do task keeps the author colour.
+pub fn task_color(status: TaskStatus) -> Option<Color32> {
+    match status {
+        TaskStatus::Todo => None,
+        TaskStatus::Doing => Some(theme::COMMENT_TASK_DOING),
+        TaskStatus::Done => Some(theme::COMMENT_TASK_DONE),
+    }
+}
+
+/// A round bubble with its bottom-left corner squared off to the tip. Task threads
+/// take the status colour and a checkbox glyph instead of the author's initial;
+/// resolved threads look the same whether or not they are tasks.
+pub fn pin(p: &Painter, tip: Pos2, author: &str, style: PinStyle, task: Option<TaskStatus>) {
     let d = theme::COMMENT_PIN;
     let c = Pos2::new(tip.x + d / 2.0, tip.y - d / 2.0);
     let ring = if style == PinStyle::Open { theme::BG_BRAND } else { theme::TEXT };
     let ring_w = theme::COMMENT_PIN_RING;
     let ghost = |col: Color32| if style == PinStyle::Ghost { col.gamma_multiply(0.7) } else { col };
-    let fill = if style == PinStyle::Resolved { theme::COMMENT_PIN_RESOLVED } else { avatar_color(author) };
+    let task = task.filter(|_| style != PinStyle::Resolved);
+    let fill = if style == PinStyle::Resolved { theme::COMMENT_PIN_RESOLVED } else { task.and_then(task_color).unwrap_or_else(|| avatar_color(author)) };
     // outline: a slightly larger circle and corner square underneath
     p.circle_filled(c, d / 2.0 + ring_w, ghost(ring));
     p.rect_filled(Rect::from_min_max(Pos2::new(tip.x - ring_w, c.y), Pos2::new(c.x, tip.y + ring_w)), 0.0, ghost(ring));
@@ -48,9 +61,55 @@ pub fn pin(p: &Painter, tip: Pos2, author: &str, style: PinStyle) {
     p.rect_filled(Rect::from_min_max(Pos2::new(tip.x, c.y), Pos2::new(c.x, tip.y)), 0.0, ghost(fill));
     if style == PinStyle::Resolved {
         icons::paint(p, Icon::Check, c, 16.0, theme::TEXT);
+    } else if let Some(t) = task {
+        checkbox(p, c, t, ghost(theme::TEXT), ghost(fill));
     } else {
         p.text(c, Align2::CENTER_CENTER, model::initial(author), theme::font_body_strong(), ghost(theme::TEXT));
     }
+}
+
+/// A 14px checkbox: empty for to do, half filled in progress, ticked when done.
+fn checkbox(p: &Painter, center: Pos2, status: TaskStatus, ink: Color32, bg: Color32) {
+    let r = Rect::from_center_size(center, Vec2::splat(14.0));
+    let radius = theme::cr(theme::RADIUS_SMALL);
+    match status {
+        TaskStatus::Todo => {
+            p.rect_stroke(r, radius, Stroke::new(2.0, ink), StrokeKind::Inside);
+        }
+        TaskStatus::Doing => {
+            p.rect_stroke(r, radius, Stroke::new(2.0, ink), StrokeKind::Inside);
+            let half = Rect::from_min_max(r.min + Vec2::splat(3.0), Pos2::new(r.center().x, r.max.y - 3.0));
+            p.rect_filled(half, 0.0, ink);
+        }
+        TaskStatus::Done => {
+            p.rect_filled(r, radius, ink);
+            icons::paint(p, Icon::Check, center, 12.0, bg);
+        }
+    }
+}
+
+/// The small status dot used in the panel and the thread header.
+pub fn status_dot(p: &Painter, center: Pos2, status: TaskStatus) {
+    match task_color(status) {
+        Some(col) => p.circle_filled(center, 4.0, col),
+        None => p.circle_stroke(center, 3.5, Stroke::new(1.0, theme::ICON_SECONDARY)),
+    };
+}
+
+/// `text` in `font` and `color` with its `@mentions` in the brand colour.
+pub fn mention_job(text: &str, font: FontId, color: Color32, wrap_width: f32) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = wrap_width;
+    let plain = TextFormat { font_id: font.clone(), color, ..Default::default() };
+    let accent = TextFormat { font_id: font, color: theme::TEXT_BRAND, ..Default::default() };
+    let mut at = 0;
+    for (a, b) in model::mention_spans(text) {
+        job.append(&text[at..a], 0.0, plain.clone());
+        job.append(&text[a..b], 0.0, accent.clone());
+        at = b;
+    }
+    job.append(&text[at..], 0.0, plain);
+    job
 }
 
 /// Height a text box needs for `text` at `width`, within the min/max of the design.

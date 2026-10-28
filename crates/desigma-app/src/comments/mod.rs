@@ -4,6 +4,10 @@
 //! `Command::SetComments`, one undo step each. The author name is an app setting
 //! ("Your name"). See `model` for the pure logic, `pins` for the canvas tool and
 //! pins, `thread` for the popovers and `panel` for the right-hand list.
+//!
+//! Two plain-text conventions need no schema: an opening message that starts with
+//! `[ ]`, `[/]` or `[x]` makes the thread a to-do, in-progress or done task (pins take
+//! the status colour), and `@name` tokens are shown as mentions.
 
 pub mod fixture;
 pub mod import;
@@ -162,6 +166,14 @@ impl App {
         }
     }
 
+    /// Sets the task marker of the thread's opening message: an ordinary text edit,
+    /// so it is one undo step and syncs like any other.
+    pub fn set_comment_task(&mut self, thread: &str, status: model::TaskStatus) -> bool {
+        let Some(first) = self.doc.comments.iter().find(|t| t.id == thread).and_then(|t| t.messages.first()) else { return false };
+        let (id, text) = (first.id.clone(), model::with_status(&first.text, status));
+        self.edit_comment_text(thread, &id, &text)
+    }
+
     pub fn delete_comment_message(&mut self, thread: &str, comment: &str) -> bool {
         match model::delete_comment(&self.doc.comments, thread, comment) {
             Some(new) => self.commit_comments(new),
@@ -233,6 +245,12 @@ impl App {
     pub fn comment_mode(&self) -> bool {
         self.tool == Tool::Comment
     }
+}
+
+/// `--panel comments`: comment mode with the first thread open (for screenshots).
+pub fn preset(app: &mut App) {
+    app.set_tool(Tool::Comment);
+    app.comments.open = app.doc.comments.first().map(|t| t.id.clone());
 }
 
 #[cfg(test)]

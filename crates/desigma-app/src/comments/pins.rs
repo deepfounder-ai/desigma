@@ -4,6 +4,7 @@
 //! active; `overlay` draws the pins above the canvas, opens threads when they are
 //! clicked and shows the popovers.
 
+use super::model::TaskStatus;
 use super::ui::{self, PinStyle};
 use super::{model, thread, Composer};
 use crate::app::App;
@@ -39,6 +40,7 @@ struct PinView {
     tip: Pos2,
     author: String,
     resolved: bool,
+    task: Option<TaskStatus>,
 }
 
 pub fn overlay(app: &mut App, ui: &mut Ui, rect: Rect) {
@@ -62,6 +64,7 @@ pub fn overlay(app: &mut App, ui: &mut Ui, rect: Rect) {
                 tip: app.view.to_screen(rect.min, p),
                 author: t.messages.first().map(|m| m.author.clone()).unwrap_or_default(),
                 resolved: t.resolved,
+                task: model::task_status(t),
             })
         })
         .collect();
@@ -88,7 +91,7 @@ pub fn overlay(app: &mut App, ui: &mut Ui, rect: Rect) {
         } else {
             PinStyle::Normal
         };
-        ui::pin(&clip, pv.tip, &pv.author, style);
+        ui::pin(&clip, pv.tip, &pv.author, style, pv.task);
         if resp.clicked() {
             clicked_pin = Some(pv.id.clone());
         }
@@ -107,7 +110,7 @@ pub fn overlay(app: &mut App, ui: &mut Ui, rect: Rect) {
     if let Some(c) = &app.comments.composer {
         if let Some(p) = model::pin_point(&app.doc, &c.anchor) {
             let author = app.comments.author.clone().unwrap_or_default();
-            ui::pin(&clip, app.view.to_screen(rect.min, p), &author, PinStyle::Open);
+            ui::pin(&clip, app.view.to_screen(rect.min, p), &author, PinStyle::Open, None);
         }
     }
 
@@ -118,7 +121,7 @@ pub fn overlay(app: &mut App, ui: &mut Ui, rect: Rect) {
         if let Some(p) = hover.filter(|p| rect.contains(*p) && !crate::widgets::pointer_over_popup(&ctx)) {
             ctx.set_cursor_icon(CursorIcon::None);
             let author = app.author();
-            ui::pin(&clip, p, &author, PinStyle::Ghost);
+            ui::pin(&clip, p, &author, PinStyle::Ghost, None);
         }
     }
 

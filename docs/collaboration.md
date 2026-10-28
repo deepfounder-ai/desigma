@@ -80,6 +80,11 @@ The diff only compares nodes that changed since the last diff; unchanged ones ar
   | `flows` | by start frame (a frame starts at most one flow); kept in start-node order |
   | `guides`, `timelines` | by page; a page's guide list is one value |
 
+  Task status and `@mentions` on comments are plain-text conventions inside a message, not
+  fields: an opening message that starts with `[ ]`, `[/]` or `[x]` makes the thread a to-do,
+  in-progress or done task (the pin takes the status colour; "Mark done" rewrites the marker),
+  and `@name` tokens are highlighted. Both travel as the message text, so nothing above changes.
+
   Whole-value last writer wins stays for `name`, `kind`, `prototype_device`, `library` and
   `library_page`. `pages` keeps its own merge: the order is the last writer's, pages it did not
   know survive.
