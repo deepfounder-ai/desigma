@@ -340,8 +340,6 @@ fn on_press(app: &mut App, rect: ERect, inp: &Inp) {
         PressAction::Nothing => {
             if app.tool == Tool::Image {
                 place_image(app, page);
-            } else if app.tool == Tool::Comment {
-                app.show_toast("Comments are not available in the offline editor", false);
             }
         }
     }
