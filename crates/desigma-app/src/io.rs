@@ -13,6 +13,23 @@ pub fn load_path(path: &Path) -> Result<Document, String> {
 /// [`load_path`], plus notes on what an import could not carry over (empty for every format
 /// but `.pen`).
 pub fn load_path_noted(path: &Path) -> Result<(Document, Vec<String>), String> {
+    let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    guard(&file, || load_unguarded(path))
+}
+
+/// Runs an import so that a bug in an importer reports an error instead of closing the app.
+/// The panic hook has already written the details to the crash log.
+fn guard<T>(file: &str, load: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(load)).unwrap_or_else(|payload| {
+        Err(format!(
+            "Cannot open {file}: desigma hit an internal error ({}). Details were saved to {}; please attach that file to a bug report.",
+            crate::crash::payload_message(payload.as_ref()),
+            crate::crash::log_path().display()
+        ))
+    })
+}
+
+fn load_unguarded(path: &Path) -> Result<(Document, Vec<String>), String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let mut notes = Vec::new();
     let mut doc = match ext.as_str() {
@@ -170,6 +187,14 @@ mod tests {
         std::fs::write(&bad, [0u8, 1, 2]).unwrap();
         assert!(load_path(&bad).unwrap_err().contains("Cannot import .pen"));
         std::fs::remove_file(&bad).ok();
+    }
+
+    #[test]
+    fn importer_panics_become_errors() {
+        let err = guard("broken.fig", || -> Result<(), String> { panic!("index out of bounds") }).unwrap_err();
+        assert!(err.starts_with("Cannot open broken.fig: desigma hit an internal error (index out of bounds)"));
+        assert!(err.contains("crash.log"));
+        assert_eq!(guard("ok.fig", || Ok::<_, String>(3)), Ok(3));
     }
 
     #[test]
