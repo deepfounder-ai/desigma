@@ -7,12 +7,13 @@ use crate::widgets;
 use egui::{Align2, Pos2, Rect, Sense, Ui, Vec2};
 
 /// Rail entries in order; the flag marks the item that starts a new group (separator above it).
-pub const ITEMS: [(RailItem, Icon, &str, bool); 5] = [
+pub const ITEMS: [(RailItem, Icon, &str, bool); 6] = [
     (RailItem::File, Icon::File, "File", false),
     (RailItem::Assets, Icon::Assets, "Assets", false),
     (RailItem::Tools, Icon::Tools, "Tools", false),
     (RailItem::Variables, Icon::Variables, "Variables", true),
     (RailItem::Plugins, Icon::Component, "Plugins", false),
+    (RailItem::Agents, Icon::Sparkle, "Agents", false),
 ];
 
 /// Top y (relative to the rail top) of each item's 56px cell.
@@ -92,7 +93,9 @@ pub fn show(app: &mut App, ui: &mut Ui, rect: Rect) {
                     continue;
                 }
                 app.ui.rail = if app.ui.rail == Some(*item) { None } else { Some(*item) };
-                if *item != RailItem::Assets {
+                if app.ui.rail == Some(RailItem::Agents) {
+                    app.open_agents(ui.ctx());
+                } else if !matches!(item, RailItem::Assets | RailItem::Agents) {
                     app.show_toast(format!("{label} panel is not available in this build"), false);
                 }
             }
@@ -129,8 +132,8 @@ mod tests {
 
     #[test]
     fn cells_follow_the_measured_rail_layout() {
-        // File, Assets, Tools every 56px, then a 16px gap before Variables and Plugins.
-        assert_eq!(cell_tops(), vec![56.0, 112.0, 168.0, 240.0, 296.0]);
+        // File, Assets, Tools every 56px, then a 16px gap before Variables, Plugins and Agents.
+        assert_eq!(cell_tops(), vec![56.0, 112.0, 168.0, 240.0, 296.0, 352.0]);
         // separators sit at y=48 (under the logo) and 232 (middle of the group gap)
         assert_eq!(theme::RAIL_SEPARATOR_Y, 48.0);
         assert_eq!(cell_tops()[3] - theme::RAIL_GROUP_GAP / 2.0, 232.0);

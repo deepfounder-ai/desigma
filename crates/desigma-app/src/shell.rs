@@ -235,6 +235,17 @@ impl Shell {
             Some(p @ ("dev-annotate" | "dev-compare")) => crate::dev::preset::panel(&mut app, p),
             Some("share") => app.open_share(),
             Some("collab") => crate::collab::preview(&mut app),
+            Some(p @ ("agents" | "agents-notes")) => {
+                // headless runs render one frame, so the first fetch happens here (see `open_agents_blocking`)
+                if opts.screenshot.is_some() {
+                    app.open_agents_blocking(ctx);
+                } else {
+                    app.open_agents(ctx);
+                }
+                if p == "agents-notes" {
+                    app.agents.tab = crate::agents::Tab::Notes;
+                }
+            }
             Some(p @ ("updater" | "updater-banner")) => crate::updater::preset(&mut app, p),
             Some(panel @ ("variables" | "variables-floating")) => {
                 app.vars.full = panel == "variables";
@@ -683,6 +694,7 @@ impl Shell {
         let ctx = ui.ctx().clone();
         self.app.now = ctx.input(|i| i.time);
         self.app.poll_plugins();
+        self.app.poll_agents(&ctx);
         self.app.poll_updater(&ctx);
         self.app.poll_install(&ctx);
         self.drive_screenshot(&ctx);

@@ -25,7 +25,7 @@ pub struct Options {
     pub present: bool,
     /// Start presentation in native fullscreen.
     pub fullscreen: bool,
-    /// Open a panel on start: `variables` (full view) or `variables-floating`.
+    /// Open a panel on start: `variables` (full view), `variables-floating`, `agents`, `agents-notes`, …
     pub panel: Option<String>,
     /// Initial zoom in percent (`--zoom 800`), centred on the selection or the page.
     pub zoom: Option<f32>,
@@ -88,10 +88,13 @@ impl Options {
 }
 
 /// Values of `--panel`: `variables` / `variables-floating` open the local variables view,
+/// `agents` / `agents-notes` the Agents panel on its Chat / Notes tab (the first state fetch runs before the frame so a screenshot shows the connection),
 /// `libraries` the Libraries modal, `updater` / `updater-banner` check the update feed (`DESIGMA_UPDATE_URL`)
 /// and show the update dialog or banner; the others are inspector popups opened on the selection for screenshots.
-pub const PANELS: [&str; 28] = [
+pub const PANELS: [&str; 30] = [
     "share",
+    "agents",
+    "agents-notes",
     "collab",
     "plugins",
     "plugin-install",
@@ -263,7 +266,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
     Ok(o)
 }
 
-pub const USAGE: &str = "usage: desigma [FILE|desigma://join/LINK] [--screenshot OUT.png] [--size WxH] [--scale FACTOR] [--select LAYER|none] [--menu main|main/File|shape|palette] [--panel interaction|present-variables|variables|variables-floating|libraries|picker|picker-page|fill-d9|picker-gradient|effects-menu|stroke-settings|type-details|effect-noise|effect-texture|effect-glass|version-history|dev-annotate|dev-compare|motion-inspector|motion-easing|motion-library|motion-clip|updater|updater-banner|share|collab]\n               [--zoom PERCENT] [--rulers] [--grid] [--gpu] [--bridge] [--home] [--library DIR] [--layout-grid grid|columns|rows] [--edit-text LAYER [--select-text START-END]]\n  FILE  .fig, .pen (Pencil), .json (Figma REST or native), .svg or .desigma; without a file the projects home screen opens
+pub const USAGE: &str = "usage: desigma [FILE|desigma://join/LINK] [--screenshot OUT.png] [--size WxH] [--scale FACTOR] [--select LAYER|none] [--menu main|main/File|shape|palette] [--panel agents|agents-notes|interaction|present-variables|variables|variables-floating|libraries|picker|picker-page|fill-d9|picker-gradient|effects-menu|stroke-settings|type-details|effect-noise|effect-texture|effect-glass|version-history|dev-annotate|dev-compare|motion-inspector|motion-easing|motion-library|motion-clip|updater|updater-banner|share|collab]\n               [--zoom PERCENT] [--rulers] [--grid] [--gpu] [--bridge] [--home] [--library DIR] [--layout-grid grid|columns|rows] [--edit-text LAYER [--select-text START-END]]\n  FILE  .fig, .pen (Pencil), .json (Figma REST or native), .svg or .desigma; without a file the projects home screen opens
   desigma://join/LINK  open the Join session dialog with a shared link filled in
   --scale    with --screenshot: device pixel ratio (2 writes a PNG twice --size, rendered crisp rather than upscaled)
   --home     show the home screen (also in --screenshot mode)
@@ -372,6 +375,7 @@ mod tests {
     fn parses_panel() {
         assert_eq!(p(&["--panel", "variables"]).unwrap().panel.as_deref(), Some("variables"));
         assert_eq!(p(&["--panel", "variables-floating"]).unwrap().panel.as_deref(), Some("variables-floating"));
+        assert_eq!(p(&["--panel", "agents"]).unwrap().panel.as_deref(), Some("agents"));
         assert!(p(&["--panel", "nope"]).is_err());
         assert!(p(&["--panel"]).is_err());
     }

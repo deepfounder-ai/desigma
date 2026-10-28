@@ -21,6 +21,8 @@ pub enum Intent {
     EmptyTrash,
     /// Settings: the name comments are posted under.
     AuthorName,
+    /// Settings: the Agents panel's server URL.
+    AgentsUrl,
     /// Names the version history entry with this number.
     NameVersion(u32),
     OpenGithub,
@@ -367,7 +369,11 @@ pub fn show(app: &mut App, ctx: &Context) {
 
 /// Runs the confirmed dialog.
 pub fn finish(app: &mut App, d: Dialog) {
-    if crate::history::finish_dialog(app, &d) || crate::dev::finish_dialog(app, &d) || crate::collab::finish_dialog(app, &d) {
+    if crate::history::finish_dialog(app, &d)
+        || crate::dev::finish_dialog(app, &d)
+        || crate::collab::finish_dialog(app, &d)
+        || crate::agents::finish_dialog(app, &d)
+    {
         return;
     }
     let Some(lib) = app.lib.clone() else { return };
@@ -422,7 +428,7 @@ pub fn finish(app: &mut App, d: Dialog) {
             }
             Ok(())
         }
-        Intent::Shortcuts | Intent::About | Intent::LeaveSession | Intent::AuthorName | Intent::NameVersion(_) | Intent::OpenDevLink(_) => {
+        Intent::Shortcuts | Intent::About | Intent::LeaveSession | Intent::AuthorName | Intent::AgentsUrl | Intent::NameVersion(_) | Intent::OpenDevLink(_) => {
             dirty = false;
             Ok(())
         }

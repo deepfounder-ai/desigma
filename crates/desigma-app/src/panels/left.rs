@@ -32,6 +32,10 @@ pub fn show(app: &mut App, ui: &mut Ui, rect: Rect) {
         super::assets::show(app, ui, Rect::from_min_max(Pos2::new(x0, y), inner.max));
         return;
     }
+    if app.ui.rail == Some(crate::app::RailItem::Agents) {
+        crate::agents::ui::show(app, ui, Rect::from_min_max(Pos2::new(x0, y), inner.max));
+        return;
+    }
 
     // ---- pages
     section_title(ui, Rect::from_min_size(Pos2::new(x0, y), Vec2::new(inner.width(), theme::PANEL_TITLE_ROW_HEIGHT)), "Pages");

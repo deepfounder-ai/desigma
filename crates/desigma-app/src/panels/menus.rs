@@ -101,6 +101,8 @@ pub enum Action {
     ToggleVersionHistory,
     /// Ctrl+Alt+S: save a named version.
     SaveVersion,
+    /// Preferences -> Agent server URL.
+    AgentsUrl,
     /// Preferences -> Your name.
     YourName,
     /// Preferences -> Use GPU rendering.
@@ -227,6 +229,7 @@ pub fn run(app: &mut App, ctx: &Context, a: Action) {
         Action::ToggleVersionHistory => app.toggle_version_history(),
         Action::SaveVersion => app.begin_save_version(),
         Action::YourName => app.ask_author_name(),
+        Action::AgentsUrl => app.ask_agents_url(),
         Action::ToggleGpu => app.toggle_gpu(),
         Action::ToggleUpdateCheck => app.toggle_update_check(),
         Action::ToggleAgentBridge => app.toggle_agent_bridge(ctx),
@@ -488,6 +491,7 @@ fn main_nodes(app: &App) -> Vec<Node> {
                     .on(crate::RELEASE_BUILD && !app.updater.no_auto_check)
                     .off(!crate::RELEASE_BUILD),
                 leaf("Allow MCP agents to control this editor", "", Action::ToggleAgentBridge).on(app.bridge.bridge.is_some()),
+                leaf("Agent server URL…", "", Action::AgentsUrl),
             ],
         ),
         leaf("Libraries", "", Action::About).off(true).sep(),

@@ -368,13 +368,13 @@ fn account_and_plan_labels_are_gone_from_the_ui_sources() {
         ("menus.rs", include_str!("../../panels/menus.rs")),
         ("toolbar.rs", include_str!("../../panels/toolbar.rs")),
     ];
-    let banned = ["\"Drafts\"", "\"Free\"", "\"Share\"", "\"Agents\"", "Help and account", "Upgrade", "\"Team\"", "\"Pro\"", "avatar"];
+    // ("Agents" left the list when the rail got a real Agents panel: `crate::agents`.)
+    let banned = ["\"Drafts\"", "\"Free\"", "\"Share\"", "Help and account", "Upgrade", "\"Team\"", "\"Pro\"", "avatar"];
     for (file, src) in sources {
         for b in banned {
             assert!(!src.contains(b), "{file} still mentions {b}");
         }
     }
-    assert!(!crate::panels::rail::ITEMS.iter().any(|i| i.2 == "Agents"));
 }
 
 #[test]

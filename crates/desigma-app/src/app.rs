@@ -58,6 +58,7 @@ pub enum RailItem {
     Tools,
     Variables,
     Plugins,
+    Agents,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +129,8 @@ pub struct App {
     /// Shared libraries (publishing, enabled libraries, updates).
     pub libs: crate::libraries::LibrariesState,
     pub plugins: crate::plugins::PluginsState,
+    /// Agents panel: chat with a local agent server (rail "Agents").
+    pub agents: crate::agents::AgentsState,
     pub bridge: crate::bridge::BridgeState,
     pub proto: crate::proto::ProtoState,
     /// Find and replace panel state (Ctrl+F).
@@ -200,6 +203,7 @@ impl App {
             assets: Default::default(),
             libs: Default::default(),
             plugins: Default::default(),
+            agents: Default::default(),
             bridge: Default::default(),
             proto: Default::default(),
             find: Default::default(),

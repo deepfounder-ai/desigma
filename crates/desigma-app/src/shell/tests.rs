@@ -958,6 +958,7 @@ mod typography;
 mod variables;
 mod vector;
 
+mod agents;
 mod assets_thumbs;
 mod bridge;
 mod collab;
