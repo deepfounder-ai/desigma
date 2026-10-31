@@ -1,5 +1,5 @@
 //! Typed, local document operations shared by the MCP transport and future bridges.
-use desigma_doc::{Command, Document, History, Node, NodeId, NodeKind, Rect, TextStyle};
+use desigma_doc::{Color, Command, Document, History, LineHeight, Node, NodeId, NodeKind, Paint, Rect, TextAlignH, TextAlignV, TextStyle};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 
@@ -133,6 +133,14 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         }
         "desigma_create_node" => create(host, parse(args)?),
         "desigma_update_node" => update(host, parse(args)?),
+        "desigma_set_appearance" => {
+            let a: AppearanceArgs = parse(args)?;
+            set_appearance(host, a)
+        }
+        "desigma_set_text_style" => {
+            let a: TextStyleArgs = parse(args)?;
+            set_text_style(host, a)
+        }
         "desigma_delete_node" => {
             let a: NodeArgs = parse(args)?;
             let n = node(host, a.node_id)?;
@@ -356,6 +364,148 @@ fn update<H: Host>(host: &mut H, a: UpdateArgs) -> Result<Value, String> {
     Ok(json!({"node":host.doc().get(NodeId(a.node_id)),"changed":changed}))
 }
 
+/// Restyle a layer's fill, stroke, corner radius and opacity.
+///
+/// A text layer keeps its colour in `TextStyle::fills`, so a `fill` on a text node is
+/// written there rather than into the unused `Node::fills`. Supports undo.
+fn set_appearance<H: Host>(host: &mut H, a: AppearanceArgs) -> Result<Value, String> {
+    let mut node = node(host, a.node_id)?.clone();
+    if node.parent.is_none() {
+        return Err("page roots cannot be restyled by this tool".into());
+    }
+    let mut applied: Vec<&str> = Vec::new();
+    if let Some(spec) = a.fill.as_deref() {
+        let paints = if spec.trim().eq_ignore_ascii_case("none") { Vec::new() } else { vec![Paint::solid(colour(spec, "fill")?)] };
+        match &mut node.kind {
+            NodeKind::Text(props) => props.style.fills = paints,
+            _ => node.fills = paints,
+        }
+        applied.push("fill");
+    }
+    if let Some(spec) = a.stroke.as_deref() {
+        node.stroke.paints = if spec.trim().eq_ignore_ascii_case("none") { Vec::new() } else { vec![Paint::solid(colour(spec, "stroke")?)] };
+        if let Some(width) = a.stroke_width {
+            node.stroke.weight = stroke_weight(width)?;
+        }
+        applied.push("stroke");
+    } else if let Some(width) = a.stroke_width {
+        node.stroke.weight = stroke_weight(width)?;
+        applied.push("stroke_width");
+    }
+    if let Some(radius) = a.corner_radius {
+        if !radius.is_finite() || !(0.0..=1_000_000.0).contains(&radius) {
+            return Err("corner_radius must be finite and between 0 and 1000000".into());
+        }
+        node.corner_radii = [radius; 4];
+        applied.push("corner_radius");
+    }
+    if let Some(opacity) = a.opacity {
+        if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+            return Err("opacity must be between 0 and 1".into());
+        }
+        node.opacity = opacity;
+        applied.push("opacity");
+    }
+    commit(host, node, applied)
+}
+
+/// Set a text layer's content and typography (size, weight, family, line height,
+/// letter spacing, alignment). Supports undo.
+fn set_text_style<H: Host>(host: &mut H, a: TextStyleArgs) -> Result<Value, String> {
+    let mut node = node(host, a.node_id)?.clone();
+    let mut applied: Vec<&str> = Vec::new();
+    let text = match &mut node.kind {
+        NodeKind::Text(props) => props,
+        _ => return Err("node is not a text node".into()),
+    };
+    if let Some(content) = a.text.as_deref() {
+        bounded_text("text", content, 100_000)?;
+        if text.content != content {
+            text.content = content.to_string();
+            text.runs.clear();
+            text.lists.clear();
+        }
+        applied.push("text");
+    }
+    if let Some(size) = a.font_size {
+        if !size.is_finite() || !(1.0..=1000.0).contains(&size) {
+            return Err("font_size must be within 1..=1000".into());
+        }
+        text.style.font_size = size;
+        applied.push("font_size");
+    }
+    if let Some(weight) = a.font_weight {
+        if !(100..=900).contains(&weight) || weight % 100 != 0 {
+            return Err("font_weight must be 100..=900 in steps of 100".into());
+        }
+        text.style.font_weight = weight;
+        applied.push("font_weight");
+    }
+    if let Some(family) = a.font_family.as_deref() {
+        if family.trim().is_empty() {
+            return Err("font_family must not be empty".into());
+        }
+        bounded_text("font_family", family, 256)?;
+        text.style.font_family = family.to_string();
+        applied.push("font_family");
+    }
+    if let Some(px) = a.line_height {
+        if !px.is_finite() || !(0.0..=1000.0).contains(&px) {
+            return Err("line_height must be within 0..=1000".into());
+        }
+        text.style.line_height = LineHeight::Pixels(px);
+        applied.push("line_height");
+    }
+    if let Some(px) = a.letter_spacing {
+        if !px.is_finite() || !(-100.0..=100.0).contains(&px) {
+            return Err("letter_spacing must be within -100..=100".into());
+        }
+        text.style.letter_spacing = px;
+        applied.push("letter_spacing");
+    }
+    if let Some(value) = a.align_h.as_deref() {
+        text.style.align_h = match value {
+            "left" => TextAlignH::Left,
+            "center" => TextAlignH::Center,
+            "right" => TextAlignH::Right,
+            "justified" => TextAlignH::Justified,
+            other => return Err(format!("align_h must be left|center|right|justified, got {other}")),
+        };
+        applied.push("align_h");
+    }
+    if let Some(value) = a.align_v.as_deref() {
+        text.style.align_v = match value {
+            "top" => TextAlignV::Top,
+            "center" => TextAlignV::Center,
+            "bottom" => TextAlignV::Bottom,
+            other => return Err(format!("align_v must be top|center|bottom, got {other}")),
+        };
+        applied.push("align_v");
+    }
+    commit(host, node, applied)
+}
+
+fn colour(spec: &str, field: &str) -> Result<Color, String> {
+    Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid {field} colour: {spec} (use #RGB, #RRGGBB, #RRGGBBAA or none)"))
+}
+
+fn stroke_weight(width: f32) -> Result<f32, String> {
+    if !width.is_finite() || !(0.0..=1000.0).contains(&width) {
+        return Err("stroke_width must be within 0..=1000".into());
+    }
+    Ok(width)
+}
+
+/// Pushes the edited node onto the undo stack and reports whether anything changed.
+fn commit<H: Host>(host: &mut H, node: Node, applied: Vec<&str>) -> Result<Value, String> {
+    let id = node.id.0;
+    let changed = host.doc().get(node.id) != Some(&node);
+    if changed {
+        host.exec(Command::Update { node: Box::new(node) })?;
+    }
+    Ok(json!({"node_id":id,"applied":applied,"changed":changed}))
+}
+
 pub fn summary(n: &Node) -> Value {
     json!({"node_id":n.id,"name":n.name,"kind":n.kind.default_name(),"parent_id":n.parent,
         "child_count":n.children.len(),"visible":n.visible,"x":n.transform.tx,"y":n.transform.ty,
@@ -435,6 +585,38 @@ struct CreateArgs {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AppearanceArgs {
+    node_id: u64,
+    /// `#RGB`, `#RRGGBB`, `#RRGGBBAA` or `none` to clear.
+    fill: Option<String>,
+    /// `#RGB`, `#RRGGBB`, `#RRGGBBAA` or `none` to clear.
+    stroke: Option<String>,
+    stroke_width: Option<f32>,
+    /// Sets all four corner radii.
+    corner_radius: Option<f32>,
+    opacity: Option<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextStyleArgs {
+    node_id: u64,
+    text: Option<String>,
+    font_size: Option<f32>,
+    /// CSS weight 100..=900, in steps of 100.
+    font_weight: Option<u16>,
+    font_family: Option<String>,
+    /// Line height in px.
+    line_height: Option<f32>,
+    letter_spacing: Option<f32>,
+    /// left | center | right | justified
+    align_h: Option<String>,
+    /// top | center | bottom
+    align_v: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UpdateArgs {
     node_id: u64,
     name: Option<String>,
@@ -490,6 +672,22 @@ pub fn tools() -> Vec<Value> {
         json!({"parent_id":id,"kind":{"type":"string","enum":["frame","rectangle","ellipse","text"]},"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size}),vec!["parent_id","kind"],false,false);
     add("update_node","Update specified fields of one non-page layer. Coordinates are parent-relative. Replacing text clears text runs and list ranges. Supports undo; changes remain in memory until saved.",
         json!({"node_id":id,"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size,"visible":{"type":"boolean"},"opacity":{"type":"number","minimum":0,"maximum":1}}),vec!["node_id"],false,true);
+    add(
+        "set_appearance",
+        "Restyle one non-page layer: fill, stroke, stroke width, corner radius, opacity. Colours accept #RGB, #RRGGBB, #RRGGBBAA or none. On text layers fill sets the text colour. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id,"fill":{"type":"string","maxLength":9},"stroke":{"type":"string","maxLength":9},"stroke_width":{"type":"number","minimum":0,"maximum":1000},"corner_radius":{"type":"number","minimum":0,"maximum":1000000},"opacity":{"type":"number","minimum":0,"maximum":1}}),
+        vec!["node_id"],
+        false,
+        true,
+    );
+    add(
+        "set_text_style",
+        "Set a text layer's content and typography: font size, CSS weight, family, line height in px, letter spacing, horizontal and vertical alignment. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id,"text":text,"font_size":{"type":"number","minimum":1,"maximum":1000},"font_weight":{"type":"integer","minimum":100,"maximum":900,"multipleOf":100},"font_family":{"type":"string","maxLength":256},"line_height":{"type":"number","minimum":0,"maximum":1000},"letter_spacing":{"type":"number","minimum":-100,"maximum":100},"align_h":{"type":"string","enum":["left","center","right","justified"]},"align_v":{"type":"string","enum":["top","center","bottom"]}}),
+        vec!["node_id"],
+        false,
+        true,
+    );
     add(
         "delete_node",
         "Remove a non-page layer and its entire subtree. Supports undo; changes remain in memory until saved.",
