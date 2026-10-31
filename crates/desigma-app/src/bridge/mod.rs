@@ -59,6 +59,11 @@ impl Host for AppHost<'_> {
     fn alloc_id(&mut self) -> Result<NodeId, String> {
         self.0.doc.try_alloc_id().ok_or_else(|| "Document has exhausted node IDs".into())
     }
+    fn doc_mut(&mut self) -> &mut Document {
+        // Content-addressed assets only (SVG bitmaps): the editor's own SVG
+        // import writes them the same way, outside the undo stack.
+        &mut self.0.doc
+    }
 }
 
 #[derive(Deserialize)]
