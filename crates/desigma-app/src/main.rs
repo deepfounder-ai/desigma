@@ -12,6 +12,7 @@ mod decks;
 mod demo;
 mod dev;
 mod edit;
+mod extwatch;
 mod find;
 mod fonts;
 mod history;

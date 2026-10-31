@@ -641,6 +641,11 @@ impl eframe::App for Shell {
     /// calls keep being answered; the bridge server requests a repaint for each one.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.app.now = ctx.input(|i| i.time);
+        self.app.poll_external_change(ctx);
+        if self.app.ext_watch.is_some() {
+            // Keep polling even while nothing else asks for frames.
+            ctx.request_repaint_after(std::time::Duration::from_millis(1000));
+        }
         self.app.poll_bridge();
         self.handle_opens(ctx);
         crate::collab::pump(&mut self.app, ctx);
@@ -732,6 +737,7 @@ impl Shell {
         crate::home::dialog::show(&mut self.app, ctx);
         crate::collab::ui::join_dialog(&mut self.app, ctx);
         crate::unsaved::dialog(&mut self.app, ctx);
+        crate::extwatch::dialog(&mut self.app, ctx);
         let full = ui.max_rect();
         self.toast(ui, full);
         self.sync_title(ctx);
@@ -866,6 +872,7 @@ impl Shell {
         crate::collab::ui::requests(&mut self.app, &ctx);
         crate::collab::ui::join_dialog(&mut self.app, &ctx);
         crate::unsaved::dialog(&mut self.app, &ctx);
+        crate::extwatch::dialog(&mut self.app, &ctx);
         self.toast(ui, full);
 
         self.sync_title(&ctx);

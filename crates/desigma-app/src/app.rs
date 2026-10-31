@@ -177,6 +177,8 @@ pub struct App {
     pub file_hash: Option<u64>,
     /// An open waiting for the answer to "Discard unsaved changes?".
     pub pending_open: Option<crate::instance::Open>,
+    /// Watching the open file for changes made by other programs (see `extwatch.rs`).
+    pub ext_watch: Option<crate::extwatch::Watch>,
 }
 
 impl App {
@@ -231,6 +233,7 @@ impl App {
             collab: Default::default(),
             file_hash: None,
             pending_open: None,
+            ext_watch: None,
         }
     }
 

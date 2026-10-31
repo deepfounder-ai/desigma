@@ -808,6 +808,11 @@ impl App {
         if let Some(b) = &self.bridge.bridge {
             b.update_document(&self.doc.name, self.file_path.as_deref());
         }
+        // Watch this file for edits made by other programs (generators, sync clients).
+        match self.file_path.clone() {
+            Some(p) => self.watch_external(&p),
+            None => self.stop_watching(),
+        }
         self.canvas.reset_interaction();
         // a design tool means nothing on a board and the other way round
         self.tool = Tool::Move;
@@ -881,8 +886,9 @@ impl App {
             Ok(p) => {
                 self.show_toast(format!("Saved {}", p.display()), false);
                 if self.lib_file.is_none() {
-                    self.file_path = Some(p);
+                    self.file_path = Some(p.clone());
                     self.file_hash = Some(crate::home::session::doc_hash(&self.doc));
+                    self.watch_external(&p);
                 }
             }
             Err(e) => self.show_toast(e, true),
