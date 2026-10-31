@@ -417,3 +417,35 @@ fn images_next_to_the_svg_file_load_and_others_do_not() {
     assert_eq!(image_count(&doc), 0);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn text_outside_the_bundled_font_keeps_its_content() {
+    // usvg only knows the bundled Inter face, so CJK lays out zero glyphs and the
+    // element used to vanish (no node, no pixels). The raw attributes are kept so
+    // an editable Text node still comes out.
+    let (doc, id) = import(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+          <text x="20" y="40" font-family="PingFang SC" font-size="12" font-weight="500" fill="#64748b">用户名</text>
+        </svg>"##,
+    );
+    let k = kids(&doc, id);
+    assert_eq!(k.len(), 1, "{}", dump(&doc, id));
+    let NodeKind::Text(t) = &k[0].kind else { panic!("{}", dump(&doc, id)) };
+    assert_eq!(t.content, "用户名");
+    assert_eq!((t.style.font_size, t.style.font_weight), (12.0, 500));
+    assert_eq!(t.style.font_family, "PingFang SC");
+    assert_eq!(k[0].transform.tx, 20.0);
+}
+
+#[test]
+fn shaped_text_is_not_duplicated_by_the_raw_fallback() {
+    let (doc, id) = import(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+          <text x="20" y="40" font-family="Inter" font-size="16" fill="#000">Hello</text>
+          <text x="20" y="80" font-family="PingFang SC" font-size="12" fill="#000">你好</text>
+        </svg>"##,
+    );
+    let k = kids(&doc, id);
+    let texts: Vec<&str> = k.iter().filter_map(|n| match &n.kind { NodeKind::Text(t) => Some(t.content.as_str()), _ => None }).collect();
+    assert_eq!(texts, vec!["Hello", "你好"], "{}", dump(&doc, id));
+}

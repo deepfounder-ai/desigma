@@ -215,3 +215,47 @@ fn emit_node(c: &mut Conv, lines: &[Line], pitch: Option<f32>, parent: usize, a:
     node.name = label.trim().to_string();
     c.push(node, parent);
 }
+
+/// Build an editable Text node from the source attributes of a `<text>` that
+/// usvg could not shape (no glyph coverage). Mirrors [`emit_node`] without usvg
+/// geometry: the box comes from `desigma_render::text_geometry`.
+pub(crate) fn emit_raw(c: &mut Conv, raw: &crate::scan::RawText, parent: usize) {
+    let align = match raw.anchor.as_str() {
+        "middle" => TextAlignH::Center,
+        "end" => TextAlignH::Right,
+        _ => TextAlignH::Left,
+    };
+    let mut style = TextStyle {
+        font_family: raw.font_family.clone(),
+        font_weight: raw.font_weight,
+        font_size: raw.font_size,
+        align_h: align,
+        ..TextStyle::default()
+    };
+    if let Some(hex) = raw.fill.as_deref() {
+        if let Some(col) = Color::from_hex(hex) {
+            style.fills = vec![Paint::solid(col)];
+        }
+    }
+    let props = TextProps {
+        content: raw.content.clone(),
+        style,
+        auto_resize: TextAutoResize::WidthAndHeight,
+        ..Default::default()
+    };
+    let geom = desigma_render::text_geometry(&props, Vec2::ZERO);
+    let (w, h) = (geom.width, geom.height);
+    let first_baseline = geom.lines.first().map(|l| l.baseline).unwrap_or(h * 0.8);
+    let x = match align {
+        TextAlignH::Center => raw.x - w / 2.0,
+        TextAlignH::Right => raw.x - w,
+        _ => raw.x,
+    };
+    let y = raw.y - first_baseline;
+
+    let mut node = c.new_node(NodeKind::Text(props));
+    node.transform = Affine::translate(x, y);
+    node.size = Vec2::new(w, h);
+    node.name = raw.content.trim().chars().take(40).collect();
+    c.push(node, parent);
+}
