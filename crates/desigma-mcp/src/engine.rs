@@ -133,6 +133,19 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         }
         "desigma_create_node" => create(host, parse(args)?),
         "desigma_update_node" => update(host, parse(args)?),
+        "desigma_delete_page" => {
+            let a: NodeArgs = parse(args)?;
+            let n = node(host, a.node_id)?;
+            if !matches!(n.kind, NodeKind::Page { .. }) || n.parent.is_some() {
+                return Err("desigma_delete_page only accepts a page node id".into());
+            }
+            if host.doc().pages.len() <= 1 {
+                return Err("cannot delete the last page".into());
+            }
+            let id = n.id;
+            host.exec(Command::Remove { id })?;
+            Ok(json!({"page_id":id,"deleted":true}))
+        }
         "desigma_delete_node" => {
             let a: NodeArgs = parse(args)?;
             let n = node(host, a.node_id)?;

@@ -14,7 +14,9 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert_eq!(client.peer_info().unwrap().server_info.as_ref().unwrap().name, "desigma-mcp");
         let tools = client.list_all_tools().await.unwrap();
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
-        assert_eq!(tools.len(), 21);
+        let schema = tools.iter().find(|t| t.name == "desigma_delete_page").unwrap().input_schema.clone();
+        assert_eq!(schema["properties"]["node_id"]["type"], "integer");
+        assert_eq!(tools.len(), 22);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -32,6 +34,13 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         client.call_tool(call("desigma_redo", json!({}))).await.unwrap();
         let restored = client.call_tool(call("desigma_get_node", json!({"node_id":id}))).await.unwrap();
         assert_eq!(restored.is_error, Some(false));
+        // A document with a single page must refuse to delete it (#39).
+        let only_page = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        let pages = only_page.structured_content.as_ref().unwrap()["pages"].as_array().unwrap().len();
+        assert_eq!(pages, 1);
+        let refused = client.call_tool(call("desigma_delete_page", json!({"node_id":page}))).await.unwrap();
+        assert_eq!(refused.is_error, Some(true));
+        assert!(refused.structured_content.unwrap()["error"].as_str().unwrap().contains("last page"));
         client.cancel().await.unwrap();
     })
     .await
