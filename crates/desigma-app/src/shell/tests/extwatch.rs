@@ -69,3 +69,25 @@ fn unsaved_edits_can_be_thrown_away_by_reloading() {
     s.frame(vec![]);
     assert_eq!(s.app().doc.name, "Theirs");
 }
+
+#[test]
+fn unsaved_edits_can_be_kept_as_a_copy_while_taking_the_disk_version() {
+    let path = scratch("both");
+    write_doc(&path, "Before");
+    let mut s = Sim::new();
+    s.shell.app.open_path(path.clone());
+    s.shell.app.doc.name = "Mine".into();
+
+    write_doc(&path, "Theirs");
+    s.frame(vec![]);
+    s.frame(vec![]);
+    assert!(s.app().ext_watch.as_ref().unwrap().asked);
+    s.click(s.rect_of("ext-both").center());
+    s.frame(vec![]);
+
+    assert_eq!(s.app().doc.name, "Theirs", "the disk version is open again");
+    let copy = path.with_file_name("doc (my copy).desigma");
+    assert!(copy.exists(), "my edits were written beside the file");
+    let (doc, _notes) = crate::io::load_path_noted(&copy).expect("read the copy");
+    assert_eq!(doc.name, "Mine");
+}

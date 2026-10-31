@@ -421,3 +421,5 @@ Another program changed this file on disk. You have unsaved edits.	另一个程�
 Keep my changes	保留我的修改
 Reload	重新载入
 Reloaded {} (changed on disk)	已重新载入 {}（磁盘上有变化）
+Keep both (save a copy)	两边都留着（另存一份）
+Saved your edits to {}	已把你的修改另存为 {}
