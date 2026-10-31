@@ -10,7 +10,7 @@
 //! * unsaved edits -> ask: Reload (throw mine away) / Keep mine (stop watching this version).
 
 use crate::app::App;
-use egui::{Align2, Color32, Context, Id, Order, Pos2, Rect, Sense, Vec2};
+use egui::{Align2, Context, Id, Order, Pos2, Rect, Vec2};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -106,7 +106,8 @@ impl App {
     }
 }
 
-/// The "this file changed on disk" question, shown while an external change meets unsaved edits.
+/// The "this file changed on disk" question, shown as a card in the bottom-right corner
+/// (the same place desktop apps put non-blocking notices) so it does not cover the canvas.
 pub fn dialog(app: &mut App, ctx: &Context) {
     let Some(w) = app.ext_watch.as_ref() else { return };
     if !w.asked {
@@ -115,35 +116,41 @@ pub fn dialog(app: &mut App, ctx: &Context) {
     let path = w.path.clone();
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let screen = ctx.content_rect();
-    const W: f32 = 460.0;
-    const PAD: f32 = 20.0;
-    let body = "It was changed by another program while you had unsaved edits. Reloading throws your edits away; keeping yours stops this prompt, but the next save overwrites the file on disk.";
-    let rect = Rect::from_center_size(screen.center() - Vec2::new(0.0, 24.0), Vec2::new(W, PAD + 24.0 + 12.0 + 56.0 + 32.0 + PAD));
+    const W: f32 = 380.0;
+    const PAD: f32 = 16.0;
+    let body = crate::i18n::tr("Another program changed this file on disk. You have unsaved edits.");
+    let r = Rect::from_min_size(
+        Pos2::new(screen.right() - W - 20.0, screen.bottom() - 20.0 - 172.0),
+        Vec2::new(W, 172.0),
+    );
     let mut answer: Option<Answer> = None;
-    egui::Area::new(Id::new("external-change")).order(Order::Foreground).fixed_pos(screen.min).interactable(true).show(ctx, |ui| {
-        ui.allocate_rect(screen, Sense::click_and_drag());
+    egui::Area::new(Id::new("external-change")).order(Order::Foreground).fixed_pos(r.min).interactable(true).show(ctx, |ui| {
         let p = ui.painter().clone();
-        p.rect_filled(screen, 0.0, Color32::from_black_alpha(140));
-        crate::widgets::menu_panel(&p, rect, crate::theme::MENU_RADIUS);
-        let x0 = rect.left() + PAD;
-        let y = rect.top() + PAD;
-        p.text(Pos2::new(x0, y + 12.0), Align2::LEFT_CENTER, crate::i18n::tr("File changed on disk"), crate::theme::font_large_strong(), crate::theme::TEXT);
-        let g = p.layout(format!("{name} — {}", crate::i18n::tr(body)), crate::theme::font_body(), crate::theme::TEXT_SECONDARY, W - PAD * 2.0);
-        p.galley(Pos2::new(x0, y + 36.0), g, crate::theme::TEXT_SECONDARY);
-        let by = rect.bottom() - PAD - 32.0;
-        let mut right = rect.right() - PAD;
+        crate::widgets::elevation_shadow(&p, r, crate::theme::MENU_RADIUS);
+        crate::widgets::menu_panel(&p, r, crate::theme::MENU_RADIUS);
+        let x0 = r.left() + PAD;
+        let y = r.top() + PAD;
+        p.text(Pos2::new(x0, y + 8.0), Align2::LEFT_CENTER, crate::i18n::tr("File changed on disk"),
+               crate::theme::font_body_strong(), crate::theme::TEXT);
+        let g = p.layout(body.to_string(), crate::theme::font_small(), crate::theme::TEXT_SECONDARY, W - PAD * 2.0);
+        p.galley(Pos2::new(x0, y + 30.0), g, crate::theme::TEXT_SECONDARY);
+        let g = p.layout(format!("{name}"), crate::theme::font_small(), crate::theme::TEXT_TERTIARY, W - PAD * 2.0);
+        p.galley(Pos2::new(x0, y + 74.0), g, crate::theme::TEXT_TERTIARY);
+        let by = r.bottom() - PAD - 32.0;
+        let mut right = r.right() - PAD;
         let buttons = [
             ("ext-keep", "Keep my changes", false, Answer::Keep),
             ("ext-reload", "Reload", true, Answer::Reload),
         ];
         for (id, text, primary, a) in buttons {
-            let w = crate::comments::ui::button_width(&p, text) + 16.0;
-            let r = Rect::from_min_size(Pos2::new(right - w, by), Vec2::new(w, 32.0));
-            if crate::comments::ui::button(ui, r, id, text, primary, true).clicked() {
+            let label = crate::i18n::tr(text);
+            let w = crate::comments::ui::button_width(&p, label) + 16.0;
+            let br = Rect::from_min_size(Pos2::new(right - w, by), Vec2::new(w, 32.0));
+            if crate::comments::ui::button(ui, br, id, label, primary, true).clicked() {
                 answer = Some(a);
             }
-            crate::widgets::record(ui, id, r);
-            right = r.left() - 8.0;
+            crate::widgets::record(ui, id, br);
+            right = br.left() - 8.0;
         }
     });
     match answer {

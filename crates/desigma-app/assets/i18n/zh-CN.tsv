@@ -414,3 +414,10 @@ yesterday	昨天
 {} weeks ago	{} 周前
 {} months ago	{} 个月前
 {} years ago	{} 年前
+
+# ---- external file watch
+File changed on disk	文件已在磁盘上被修改
+Another program changed this file on disk. You have unsaved edits.	另一个程序改了这个文件，而你有未保存的修改。
+Keep my changes	保留我的修改
+Reload	重新载入
+Reloaded {} (changed on disk)	已重新载入 {}（磁盘上有变化）
