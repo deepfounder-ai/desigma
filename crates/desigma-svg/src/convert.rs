@@ -2,7 +2,7 @@
 
 use crate::effects::effects_of;
 use crate::paint::{self, affine, Frame};
-use crate::scan::{Shape, GENERATED_ID, KEPT_GROUP_ID};
+use crate::scan::{RawText, Shape, GENERATED_ID, KEPT_GROUP_ID};
 use crate::SvgNodes;
 use desigma_doc::*;
 use std::collections::{BTreeMap, HashMap};
@@ -45,14 +45,16 @@ pub(crate) struct Conv<'a> {
     pub nodes: Vec<Node>,
     pub images: BTreeMap<String, Vec<u8>>,
     shapes: HashMap<String, Shape>,
+    /// `<text>` elements usvg could not shape (no glyph coverage); emitted verbatim.
+    texts: Vec<RawText>,
     /// Converting a `clipPath`: only fill geometry matters, painted black.
     clip_mode: bool,
     /// Converting a luminance `<mask>`: paints become their luminance as alpha.
     luma: bool,
 }
 
-pub(crate) fn convert_tree(tree: &usvg::Tree, name: &str, shapes: HashMap<String, Shape>, alloc: &mut dyn FnMut() -> NodeId) -> SvgNodes {
-    let mut c = Conv { alloc, nodes: Vec::new(), images: BTreeMap::new(), shapes, clip_mode: false, luma: false };
+pub(crate) fn convert_tree(tree: &usvg::Tree, name: &str, shapes: HashMap<String, Shape>, texts: Vec<RawText>, alloc: &mut dyn FnMut() -> NodeId) -> SvgNodes {
+    let mut c = Conv { alloc, nodes: Vec::new(), images: BTreeMap::new(), shapes, texts, clip_mode: false, luma: false };
     let size = tree.size();
     let mut root = c.new_node(NodeKind::Frame(FrameProps { clips_content: true, ..Default::default() }));
     root.name = if name.is_empty() { "svg".into() } else { name.to_string() };
@@ -68,6 +70,7 @@ pub(crate) fn convert_tree(tree: &usvg::Tree, name: &str, shapes: HashMap<String
     } else {
         c.convert_group(g, 0, Attrs::with_pre(Affine::IDENTITY));
     }
+    c.emit_unshaped_texts();
     SvgNodes { nodes: c.nodes, images: c.images }
 }
 
@@ -582,4 +585,30 @@ fn items(kids: &[usvg::Node]) -> Vec<Item<'_>> {
         }
     }
     out
+}
+
+impl Conv<'_> {
+    /// Emit a Text node for every `<text>` whose glyphs usvg could not shape.
+    ///
+    /// usvg is built with the bundled Inter face only, so any script outside its
+    /// coverage lays out zero glyphs and `convert_text` falls back to flattened
+    /// outlines — which are empty. Before this pass such text vanished from the
+    /// document (no node, no pixels). Matching by content leaves text usvg did
+    /// shape untouched, so nothing is emitted twice.
+    fn emit_unshaped_texts(&mut self) {
+        let mut shaped: HashMap<String, usize> = HashMap::new();
+        for n in &self.nodes {
+            if let NodeKind::Text(t) = &n.kind {
+                *shaped.entry(t.content.trim().to_string()).or_default() += 1;
+            }
+        }
+        let raws = std::mem::take(&mut self.texts);
+        for raw in raws {
+            let key = raw.content.trim().to_string();
+            match shaped.get_mut(&key) {
+                Some(count) if *count > 0 => *count -= 1,
+                _ => crate::text::emit_raw(self, &raw, 0),
+            }
+        }
+    }
 }

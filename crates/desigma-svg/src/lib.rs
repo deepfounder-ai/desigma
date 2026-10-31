@@ -123,7 +123,7 @@ pub fn svg_to_nodes_with(svg: &str, name: &str, alloc: &mut dyn FnMut() -> NodeI
     if !(size.width() > 0.0 && size.height() > 0.0) {
         return Err(SvgError::ZeroSize);
     }
-    Ok(convert::convert_tree(&tree, name, scanned.shapes, alloc))
+    Ok(convert::convert_tree(&tree, name, scanned.shapes, scanned.texts, alloc))
 }
 
 /// Imports `svg` as a Frame named `"svg"` under `parent`, top-left at `at`

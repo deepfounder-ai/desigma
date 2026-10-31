@@ -23,18 +23,41 @@ pub enum Shape {
     Ellipse,
 }
 
+/// A `<text>` element as written in the source.
+///
+/// `usvg` only keeps text it can shape, and it is built with the bundled Inter
+/// face alone — so any run outside its coverage (CJK, Cyrillic, emoji …) lays
+/// out zero glyphs and the element disappears without a trace. Keeping the raw
+/// attributes lets the converter rebuild an editable Text node in that case.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawText {
+    pub x: f32,
+    pub y: f32,
+    pub font_size: f32,
+    pub font_weight: u16,
+    pub font_family: String,
+    /// First solid color found in `fill`, already `#rrggbb`.
+    pub fill: Option<String>,
+    /// `start` / `middle` / `end`.
+    pub anchor: String,
+    pub content: String,
+}
+
 pub struct Scanned {
     /// The markup to feed to usvg (ids injected).
     pub svg: String,
     pub shapes: HashMap<String, Shape>,
+    /// Text elements, in document order (see [`RawText`]).
+    pub texts: Vec<RawText>,
 }
 
 pub fn prescan(svg: &str) -> Scanned {
     let Ok(doc) = roxmltree::Document::parse_with_options(svg, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }) else {
         // usvg will report the parse error.
-        return Scanned { svg: svg.to_string(), shapes: HashMap::new() };
+        return Scanned { svg: svg.to_string(), shapes: HashMap::new(), texts: Vec::new() };
     };
     let mut shapes = HashMap::new();
+    let mut texts: Vec<RawText> = Vec::new();
     let mut inserts: Vec<(usize, String)> = Vec::new();
     let mut counter = 0usize;
     for node in doc.descendants().filter(|n| n.is_element()) {
@@ -63,6 +86,22 @@ pub fn prescan(svg: &str) -> Scanned {
                 }
                 continue;
             }
+            "text" => {
+                let content = node.text().unwrap_or("").to_string();
+                if !content.trim().is_empty() {
+                    texts.push(RawText {
+                        x: num_attr(&node, "x").unwrap_or(0.0),
+                        y: num_attr(&node, "y").unwrap_or(0.0),
+                        font_size: num_attr(&node, "font-size").unwrap_or(16.0),
+                        font_weight: num_attr(&node, "font-weight").unwrap_or(400.0).round() as u16,
+                        font_family: node.attribute("font-family").unwrap_or("Inter").split(',').next().unwrap_or("Inter").trim().trim_matches('\'').to_string(),
+                        fill: node.attribute("fill").map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v != "none"),
+                        anchor: node.attribute("text-anchor").unwrap_or("start").to_string(),
+                        content,
+                    });
+                }
+                continue;
+            }
             _ => continue,
         };
         let id = match node.attribute("id") {
@@ -81,14 +120,20 @@ pub fn prescan(svg: &str) -> Scanned {
         shapes.insert(id, shape);
     }
     if inserts.is_empty() {
-        return Scanned { svg: svg.to_string(), shapes };
+        return Scanned { svg: svg.to_string(), shapes, texts };
     }
     inserts.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
     let mut out = svg.to_string();
     for (at, text) in inserts {
         out.insert_str(at, &text);
     }
-    Scanned { svg: out, shapes }
+    Scanned { svg: out, shapes, texts }
+}
+
+fn num_attr(node: &roxmltree::Node, name: &str) -> Option<f32> {
+    let v = node.attribute(name)?.trim();
+    let num = v.strip_suffix("px").unwrap_or(v).trim();
+    num.parse::<f32>().ok().filter(|n| n.is_finite())
 }
 
 /// `Some(Some(v))` parsed, `Some(None)` present but not a plain length, `None` absent.
