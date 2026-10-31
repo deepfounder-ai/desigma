@@ -257,6 +257,8 @@ impl Session {
                     name,
                     "desigma_create_node"
                         | "desigma_update_node"
+                        | "desigma_set_appearance"
+                        | "desigma_set_text_style"
                         | "desigma_delete_node"
                         | "desigma_undo"
                         | "desigma_redo"
