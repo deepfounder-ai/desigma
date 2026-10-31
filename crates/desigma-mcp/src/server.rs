@@ -258,6 +258,7 @@ impl Session {
                     "desigma_create_node"
                         | "desigma_update_node"
                         | "desigma_delete_node"
+                        | "desigma_delete_page"
                         | "desigma_undo"
                         | "desigma_redo"
                         | "desigma_add_keyframe"
@@ -322,6 +323,7 @@ pub fn tools() -> Vec<Tool> {
     for (name, description, properties, required) in [
         ("desigma_open_file", "Open a .desigma, .fig, .pen (Pencil), SVG or Figma REST JSON file inside the workspace: in the editor when its agent bridge is on, otherwise into the isolated file session. Refuses while the session (or the editor) has unsaved edits; ask the user to save, or pass discard_changes=true to throw them away. Call desigma_list_files for the path.", json!({"path":{"type":"string"},"discard_changes":{"type":"boolean","default":false}}), vec!["path"]),
         ("desigma_save_file", "Save the document as a .desigma file inside the workspace (in the editor: a copy; its own file path is unchanged). By default the file must not exist yet; pass overwrite=true to replace an existing .desigma file atomically, e.g. the `path` desigma_get_document reports. Parent directory must exist.", json!({"path":{"type":"string"},"overwrite":{"type":"boolean","default":false}}), vec!["path"]),
+        ("desigma_delete_page", "Delete a page and everything on it. Refuses to delete the last remaining page.", json!({"node_id":{"type":"integer","minimum":1}}), vec!["node_id"]),
         ("desigma_new_document", "Start a blank document with one page. Refuses while the session (or the editor) has unsaved edits; ask the user to save, or pass discard_changes=true to throw them away.", json!({"name":{"type":"string","minLength":1,"maxLength":1024},"discard_changes":{"type":"boolean","default":false}}), vec!["name"]),
     ] {
         raw.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":name != "desigma_save_file","idempotentHint":false,"openWorldHint":false}}));
