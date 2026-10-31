@@ -133,6 +133,10 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         }
         "desigma_create_node" => create(host, parse(args)?),
         "desigma_update_node" => update(host, parse(args)?),
+        "desigma_move_node" => {
+            let a: MoveNodeArgs = parse(args)?;
+            move_node(host, a)
+        }
         "desigma_delete_node" => {
             let a: NodeArgs = parse(args)?;
             let n = node(host, a.node_id)?;
@@ -356,6 +360,33 @@ fn update<H: Host>(host: &mut H, a: UpdateArgs) -> Result<Value, String> {
     Ok(json!({"node":host.doc().get(NodeId(a.node_id)),"changed":changed}))
 }
 
+/// Move one layer under another container, keeping its parent-relative transform.
+///
+/// Refuses page roots, the layer's own subtree and non-container targets, so the
+/// document can never be put into a cycle. Supports undo.
+fn move_node<H: Host>(host: &mut H, a: MoveNodeArgs) -> Result<Value, String> {
+    let moving = node(host, a.node_id)?.clone();
+    if moving.parent.is_none() {
+        return Err("page roots cannot be moved by this tool".into());
+    }
+    if a.node_id == a.parent_id {
+        return Err("a layer cannot be moved into itself".into());
+    }
+    let target = node(host, a.parent_id)?;
+    if !target.kind.is_container() {
+        return Err(format!("node {} is not a container", a.parent_id));
+    }
+    if host.doc().is_ancestor(NodeId(a.node_id), NodeId(a.parent_id)) {
+        return Err("a layer cannot be moved into its own subtree".into());
+    }
+    let index = a.index.unwrap_or(target.children.len()).min(target.children.len());
+    if moving.parent == Some(NodeId(a.parent_id)) && target.children.get(index) == Some(&NodeId(a.node_id)) {
+        return Ok(json!({"node_id":a.node_id,"parent_id":a.parent_id,"index":index,"changed":false}));
+    }
+    host.exec(Command::Reparent { id: NodeId(a.node_id), parent: NodeId(a.parent_id), index })?;
+    Ok(json!({"node_id":a.node_id,"parent_id":a.parent_id,"index":index,"changed":true}))
+}
+
 pub fn summary(n: &Node) -> Value {
     json!({"node_id":n.id,"name":n.name,"kind":n.kind.default_name(),"parent_id":n.parent,
         "child_count":n.children.len(),"visible":n.visible,"x":n.transform.tx,"y":n.transform.ty,
@@ -435,6 +466,16 @@ struct CreateArgs {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MoveNodeArgs {
+    node_id: u64,
+    /// New container (frame, group, section or page root).
+    parent_id: u64,
+    /// Position among the new parent's children; appended when omitted.
+    index: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UpdateArgs {
     node_id: u64,
     name: Option<String>,
@@ -490,6 +531,14 @@ pub fn tools() -> Vec<Value> {
         json!({"parent_id":id,"kind":{"type":"string","enum":["frame","rectangle","ellipse","text"]},"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size}),vec!["parent_id","kind"],false,false);
     add("update_node","Update specified fields of one non-page layer. Coordinates are parent-relative. Replacing text clears text runs and list ranges. Supports undo; changes remain in memory until saved.",
         json!({"node_id":id,"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size,"visible":{"type":"boolean"},"opacity":{"type":"number","minimum":0,"maximum":1}}),vec!["node_id"],false,true);
+    add(
+        "move_node",
+        "Move one non-page layer under another container (frame, group, section or page), optionally at a given child index; appended when index is omitted. The layer keeps its parent-relative transform, so absolute position changes when the new parent is transformed. Refuses page roots, the layer's own subtree and non-container targets. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id,"parent_id":id,"index":{"type":"integer","minimum":0}}),
+        vec!["node_id","parent_id"],
+        false,
+        true,
+    );
     add(
         "delete_node",
         "Remove a non-page layer and its entire subtree. Supports undo; changes remain in memory until saved.",
