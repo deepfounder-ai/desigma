@@ -256,6 +256,7 @@ impl Session {
                 if matches!(
                     name,
                     "desigma_create_node"
+                        | "desigma_create_page"
                         | "desigma_update_node"
                         | "desigma_delete_node"
                         | "desigma_undo"
