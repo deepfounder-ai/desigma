@@ -130,6 +130,34 @@ impl Session {
         Ok(resolved)
     }
 
+    /// `desigma_import_svg` accepts either the markup itself or the workspace
+    /// path of an `.svg` file; a path is read here so the editor bridge only
+    /// ever sees markup (it cannot read this machine's paths safely).
+    fn inline_svg(&self, mut args: Value) -> Result<Value, String> {
+        let Some(obj) = args.as_object_mut() else { return Ok(args) };
+        let Some(path) = obj.remove("path") else { return Ok(args) };
+        let path = path.as_str().ok_or("path must be a string")?;
+        if obj.contains_key("svg") {
+            return Err("pass either svg or path, not both".into());
+        }
+        let file = self.input_path(path)?;
+        if file.extension().and_then(|x| x.to_str()).is_none_or(|x| !x.eq_ignore_ascii_case("svg")) {
+            return Err("path must end in .svg".into());
+        }
+        let meta = fs::metadata(&file).map_err(|e| format!("Cannot read SVG: {e}"))?;
+        if meta.len() > 8 * 1024 * 1024 {
+            return Err("Input SVG exceeds the 8 MiB limit".into());
+        }
+        let markup = fs::read_to_string(&file).map_err(|e| format!("Cannot read SVG: {e}"))?;
+        obj.insert("svg".into(), json!(markup));
+        if !obj.contains_key("name") {
+            if let Some(stem) = file.file_stem().and_then(|s| s.to_str()) {
+                obj.insert("name".into(), json!(stem));
+            }
+        }
+        Ok(args)
+    }
+
     /// Designs an assistant can open with `desigma_open_file`: library files (whatever folder
     /// they were imported from) and readable copies of files opened from outside the library.
     fn list_files(&self) -> Result<Value, String> {
@@ -170,11 +198,14 @@ impl Session {
         path.canonicalize().is_ok_and(|p| p.starts_with(&self.root))
     }
 
-    pub fn call(&mut self, name: &str, args: Value) -> Result<Value, String> {
+    pub fn call(&mut self, name: &str, mut args: Value) -> Result<Value, String> {
         // The file list is the workspace on disk, not the open document, so it stays here when
         // the editor bridge is on.
         if name == "desigma_list_files" {
             return self.list_files();
+        }
+        if name == "desigma_import_svg" {
+            args = self.inline_svg(args)?;
         }
         match (self.mode, self.discovery.as_deref().and_then(crate::live::probe_at)) {
             (Some(Mode::Editor), None) => {

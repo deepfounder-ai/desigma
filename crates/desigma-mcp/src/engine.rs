@@ -1,5 +1,6 @@
 //! Typed, local document operations shared by the MCP transport and future bridges.
 use desigma_doc::{Command, Document, History, Node, NodeId, NodeKind, Rect, TextStyle};
+use desigma_svg::ImportOptions;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 
@@ -26,6 +27,11 @@ pub trait Host {
     fn can_redo(&self) -> bool;
     /// Allocates a fresh node id on the document.
     fn alloc_id(&mut self) -> Result<NodeId, String>;
+    /// Direct document access for content-addressed assets only (bitmap bytes
+    /// carried by an imported SVG). Not recorded by undo, exactly like the
+    /// editor's own SVG import, so callers must apply them together with an
+    /// undoable insert.
+    fn doc_mut(&mut self) -> &mut Document;
 }
 
 impl Host for Engine {
@@ -49,6 +55,9 @@ impl Host for Engine {
     }
     fn alloc_id(&mut self) -> Result<NodeId, String> {
         self.doc.try_alloc_id().ok_or_else(|| "Document has exhausted node IDs".into())
+    }
+    fn doc_mut(&mut self) -> &mut Document {
+        &mut self.doc
     }
 }
 
@@ -133,6 +142,7 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         }
         "desigma_create_node" => create(host, parse(args)?),
         "desigma_update_node" => update(host, parse(args)?),
+        "desigma_import_svg" => import_svg(host, parse(args)?),
         "desigma_delete_node" => {
             let a: NodeArgs = parse(args)?;
             let n = node(host, a.node_id)?;
@@ -447,6 +457,74 @@ struct UpdateArgs {
     opacity: Option<f32>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportSvgArgs {
+    pub parent_id: u64,
+    /// SVG markup (`<svg …`), at most 8 MiB.
+    pub svg: String,
+    /// Layer name for the imported frame; defaults to "svg".
+    pub name: Option<String>,
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
+}
+
+/// Imports SVG markup as a frame under `parent_id`, top-left at (x, y) in the
+/// parent's coordinates. One undoable `Command::Insert`; bitmap bytes carried
+/// by the SVG are merged into the document as content-addressed assets.
+pub fn import_svg<H: Host>(host: &mut H, a: ImportSvgArgs) -> Result<Value, String> {
+    node(host, a.parent_id)?;
+    if a.svg.len() > 8 * 1024 * 1024 {
+        return Err("svg markup exceeds the 8 MiB limit".into());
+    }
+    if !desigma_svg::looks_like_svg(&a.svg) {
+        return Err("svg must be SVG markup starting with <svg or an XML prolog".into());
+    }
+    if !a.x.is_finite() || !a.y.is_finite() {
+        return Err("x and y must be finite numbers".into());
+    }
+    let name = match a.name.as_deref().map(str::trim) {
+        None | Some("") => "svg".to_string(),
+        Some(n) => n.to_string(),
+    };
+    bounded_text("name", &name, 1024)?;
+    let index = host.doc().get(NodeId(a.parent_id)).map_or(0, |n| n.children.len());
+    let mut exhausted = false;
+    let mut out = desigma_svg::svg_to_nodes_with(
+        &a.svg,
+        &name,
+        &mut || match host.alloc_id() {
+            Ok(id) => id,
+            Err(_) => {
+                exhausted = true;
+                NodeId(0)
+            }
+        },
+        &ImportOptions::default(),
+    )
+    .map_err(|e| format!("cannot import SVG: {e}"))?;
+    if exhausted {
+        return Err("Document has exhausted node IDs".into());
+    }
+    let count = out.nodes.len();
+    if count > 20_000 {
+        return Err(format!("svg produces {count} layers; the limit is 20000"));
+    }
+    let size = out.nodes.first().map(|n| n.size);
+    if let Some(root) = out.nodes.first_mut() {
+        root.transform = desigma_doc::Affine::translate(a.x, a.y);
+    }
+    let root_id = out.nodes.first().map(|n| n.id).ok_or("svg produced no layers")?;
+    let images = out.images.len();
+    host.doc_mut().images.append(&mut out.images);
+    host.exec(Command::Insert { parent: NodeId(a.parent_id), index, nodes: out.nodes })?;
+    Ok(json!({"node_id":root_id,"name":name,"nodes":count,
+        "width":size.map(|s| s.x),"height":size.map(|s| s.y),
+        "images":images,"changed":true}))
+}
+
 /// JSON tool descriptors kept beside the argument validators.
 pub fn tools() -> Vec<Value> {
     let id = json!({"type":"integer","minimum":1,"description":"Desigma numeric node ID; obtain from list_nodes/get_document."});
@@ -488,6 +566,7 @@ pub fn tools() -> Vec<Value> {
     );
     add("create_node","Create one layer in a container; defaults to x/y=0, width/height=100. Supports undo. Text is only valid for text layers. Changes are in memory until saved.",
         json!({"parent_id":id,"kind":{"type":"string","enum":["frame","rectangle","ellipse","text"]},"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size}),vec!["parent_id","kind"],false,false);
+    add("import_svg","Import SVG markup as one frame under parent_id, top-left at (x, y). Real child layers (paths, text, groups) are created rather than a flat bitmap; bitmap bytes inside the SVG become document assets. Supports undo as one step; changes remain in memory until saved.",json!({"parent_id":id,"svg":{"type":"string","maxLength":8388608,"description":"SVG markup; at most 8 MiB. Pass this or path."},"path":{"type":"string","description":"Workspace-relative .svg file to import instead of inline markup; the layer takes the file name unless name is given."},"name":name,"x":coordinate,"y":coordinate}),vec!["parent_id"],false,false);
     add("update_node","Update specified fields of one non-page layer. Coordinates are parent-relative. Replacing text clears text runs and list ranges. Supports undo; changes remain in memory until saved.",
         json!({"node_id":id,"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size,"visible":{"type":"boolean"},"opacity":{"type":"number","minimum":0,"maximum":1}}),vec!["node_id"],false,true);
     add(
@@ -698,6 +777,9 @@ mod tests {
             fn alloc_id(&mut self) -> Result<NodeId, String> {
                 self.e.alloc_id()
             }
+            fn doc_mut(&mut self) -> &mut Document {
+                &mut self.e.doc
+            }
         }
         let mut h = Counting { e: Engine::default(), execs: 0 };
         let id = call(&mut h, "desigma_create_node", json!({"parent_id":1,"kind":"frame","name":"A"})).unwrap()["node"]["id"].as_u64().unwrap();
@@ -705,7 +787,6 @@ mod tests {
         assert_eq!(h.execs, 2);
         assert!(call(&mut h, "desigma_undo", json!({})).unwrap()["changed"].as_bool().unwrap());
     }
-
     #[test]
     fn export_image_is_annotated_as_a_writing_idempotent_tool() {
         let t = tools().into_iter().find(|t| t["name"] == "desigma_export_image").unwrap();

@@ -14,7 +14,7 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert_eq!(client.peer_info().unwrap().server_info.as_ref().unwrap().name, "desigma-mcp");
         let tools = client.list_all_tools().await.unwrap();
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
-        assert_eq!(tools.len(), 21);
+        assert_eq!(tools.len(), 22);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -32,6 +32,59 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         client.call_tool(call("desigma_redo", json!({}))).await.unwrap();
         let restored = client.call_tool(call("desigma_get_node", json!({"node_id":id}))).await.unwrap();
         assert_eq!(restored.is_error, Some(false));
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
+/// SVG markup becomes real layers under the requested parent, in one undo step (#32 follow-up).
+#[tokio::test]
+async fn importing_svg_creates_layers_and_undoes_as_one_step() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\"><rect x=\"2\" y=\"2\" width=\"20\" height=\"20\" fill=\"#3366ff\"/><circle cx=\"12\" cy=\"12\" r=\"4\" fill=\"#ffffff\"/></svg>";
+        let created = client
+            .call_tool(call("desigma_import_svg", json!({"parent_id":1,"svg":svg,"name":"icon","x":5,"y":6})))
+            .await
+            .unwrap();
+        assert_eq!(created.is_error, Some(false), "{created:?}");
+        let info = created.structured_content.unwrap();
+        assert_eq!(info["name"], "icon");
+        assert_eq!(info["width"], 24.0);
+        assert_eq!(info["height"], 24.0);
+        assert!(info["nodes"].as_u64().unwrap() >= 3, "{info:?}");
+        let root = info["node_id"].as_u64().unwrap();
+
+        let node = client.call_tool(call("desigma_get_node", json!({"node_id":root}))).await.unwrap();
+        let node = node.structured_content.unwrap()["node"].clone();
+        assert_eq!(node["name"], "icon");
+        assert_eq!(node["transform"]["tx"], 5.0);
+        assert_eq!(node["transform"]["ty"], 6.0);
+        assert!(node["children"].as_array().is_some_and(|c| c.len() >= 2), "{node:?}");
+
+        let not_svg = client.call_tool(call("desigma_import_svg", json!({"parent_id":1,"svg":"hello"}))).await.unwrap();
+        assert_eq!(not_svg.is_error, Some(true));
+        let no_parent = client
+            .call_tool(call("desigma_import_svg", json!({"parent_id":999999,"svg":svg})))
+            .await
+            .unwrap();
+        assert_eq!(no_parent.is_error, Some(true));
+        let escape = client
+            .call_tool(call("desigma_import_svg", json!({"parent_id":1,"path":"../Cargo.toml"})))
+            .await
+            .unwrap();
+        assert_eq!(escape.is_error, Some(true), "paths outside the workspace must be refused");
+
+        let undone = client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        assert_eq!(undone.is_error, Some(false));
+        let gone = client.call_tool(call("desigma_get_node", json!({"node_id":root}))).await.unwrap();
+        assert_eq!(gone.is_error, Some(true), "one undo must remove the whole import");
         client.cancel().await.unwrap();
     })
     .await
