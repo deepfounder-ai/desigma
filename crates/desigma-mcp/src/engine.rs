@@ -746,7 +746,10 @@ pub struct ImportSvgArgs {
 /// parent's coordinates. One undoable `Command::Insert`; bitmap bytes carried
 /// by the SVG are merged into the document as content-addressed assets.
 pub fn import_svg<H: Host>(host: &mut H, a: ImportSvgArgs) -> Result<Value, String> {
-    node(host, a.parent_id)?;
+    let parent = node(host, a.parent_id)?;
+    if !parent.kind.is_container() {
+        return Err("parent_id must identify a container".into());
+    }
     if a.svg.len() > 8 * 1024 * 1024 {
         return Err("svg markup exceeds the 8 MiB limit".into());
     }
@@ -789,8 +792,11 @@ pub fn import_svg<H: Host>(host: &mut H, a: ImportSvgArgs) -> Result<Value, Stri
     }
     let root_id = out.nodes.first().map(|n| n.id).ok_or("svg produced no layers")?;
     let images = out.images.len();
-    host.doc_mut().images.append(&mut out.images);
     host.exec(Command::Insert { parent: NodeId(a.parent_id), index, nodes: out.nodes })?;
+    // Merge the bitmap assets only after the insert succeeded: they live outside the
+    // undo stack, so a failed insert would otherwise leave orphaned bytes in the
+    // document that survive into saved files.
+    host.doc_mut().images.append(&mut out.images);
     Ok(json!({"node_id":root_id,"name":name,"nodes":count,
         "width":size.map(|s| s.x),"height":size.map(|s| s.y),
         "images":images,"changed":true}))
@@ -1095,5 +1101,69 @@ mod tests {
         let t = tools().into_iter().find(|t| t["name"] == "desigma_export_image").unwrap();
         assert_eq!(t["annotations"]["readOnlyHint"], false);
         assert_eq!(t["annotations"]["idempotentHint"], true);
+    }
+
+    fn image_svg() -> String {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><image href="data:image/png;base64,{png}" width="4" height="4"/></svg>"#)
+    }
+
+    #[test]
+    fn import_svg_rejects_leaf_parents_like_create_node() {
+        let mut e = Engine::default();
+        let leaf = create(&mut e, "rectangle", "Box");
+        let steps = e.history.undo_len();
+        let err = e.call("desigma_import_svg", json!({"parent_id":leaf,"svg":image_svg()})).unwrap_err();
+        assert!(err.contains("container"), "{err}");
+        assert!(e.doc.images.is_empty(), "a rejected import must not leave image bytes behind");
+        assert_eq!(e.history.undo_len(), steps, "a rejected import must not touch the undo stack");
+    }
+
+    #[test]
+    fn import_svg_stores_embedded_images_as_assets() {
+        let mut e = Engine::default();
+        let ok = e.call("desigma_import_svg", json!({"parent_id":1,"svg":image_svg()})).unwrap();
+        assert_eq!(ok["images"], 1, "the bitmap must be extracted, or the leak tests are vacuous");
+        assert_eq!(e.doc.images.len(), 1);
+        assert!(e.history.can_undo());
+    }
+
+    /// A host whose exec always fails proves a failed import leaves no bitmap bytes
+    /// behind: `Document::images` is outside the undo stack, so orphaned entries
+    /// would survive into saved files.
+    #[test]
+    fn a_failed_import_leaves_no_image_bytes_behind() {
+        struct Failing {
+            e: Engine,
+        }
+        impl Host for Failing {
+            fn doc(&self) -> &Document {
+                &self.e.doc
+            }
+            fn exec(&mut self, _: Command) -> Result<(), String> {
+                Err("exec failed".into())
+            }
+            fn undo(&mut self) -> Result<bool, String> {
+                self.e.undo()
+            }
+            fn redo(&mut self) -> Result<bool, String> {
+                self.e.redo()
+            }
+            fn can_undo(&self) -> bool {
+                self.e.can_undo()
+            }
+            fn can_redo(&self) -> bool {
+                self.e.can_redo()
+            }
+            fn alloc_id(&mut self) -> Result<NodeId, String> {
+                self.e.alloc_id()
+            }
+            fn doc_mut(&mut self) -> &mut Document {
+                &mut self.e.doc
+            }
+        }
+        let mut h = Failing { e: Engine::default() };
+        assert!(call(&mut h, "desigma_import_svg", json!({"parent_id":1,"svg":image_svg()})).is_err());
+        assert!(h.e.doc.images.is_empty(), "a failed insert must not leave image bytes behind");
     }
 }
