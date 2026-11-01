@@ -26,17 +26,29 @@ impl Host for AppHost<'_> {
     }
     fn exec(&mut self, cmd: Command) -> Result<(), String> {
         let doc = &mut self.0.doc;
-        // Lay out what the edit touched, as the editor's own create/delete/property handlers do.
-        let around = match &cmd {
-            Command::Insert { parent, .. } => Some(*parent),
-            Command::Remove { id } => doc.get(*id).and_then(|n| n.parent),
-            Command::Update { node } => Some(node.id),
-            _ => None,
-        };
+        // Lay out what the edit touched, as the editor's own create/delete/property/move
+        // handlers do. A reparent leaves one container and enters another, so both parents
+        // reflow; the moved subtree registers as touched so board connectors follow it.
+        let mut around: Vec<NodeId> = Vec::new();
+        match &cmd {
+            Command::Insert { parent, .. } => around.push(*parent),
+            Command::Remove { id } => around.extend(doc.get(*id).and_then(|n| n.parent)),
+            Command::Update { node } => around.push(node.id),
+            Command::Reparent { id, parent, .. } => {
+                around.push(*parent);
+                around.extend(doc.get(*id).and_then(|n| n.parent).filter(|old| *old != *parent));
+            }
+            _ => {}
+        }
         let mut tx = crate::edit::Tx::new();
+        if let Command::Reparent { id, .. } = &cmd {
+            tx.ed.touch(doc, *id);
+        }
         tx.cmd(doc, cmd).map_err(|e| e.to_string())?;
-        if let Some(id) = around.filter(|id| doc.get(*id).is_some()) {
-            crate::layout::relayout_around(doc, &mut tx.ed, id);
+        for id in around {
+            if doc.get(id).is_some() {
+                crate::layout::relayout_around(doc, &mut tx.ed, id);
+            }
         }
         if self.0.run_tx(tx) {
             Ok(())

@@ -249,3 +249,30 @@ fn bridge_file_tools_act_on_the_editor_document() {
     s.shell.app.home = None;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A bridge move changes two containers: the hug frame it leaves must shrink
+/// again, exactly as the editor's own move does, and undo must restore both.
+#[test]
+fn bridge_moves_relayout_both_parents() {
+    let mut s = Sim::new();
+    let ctx = s.ctx.clone();
+    s.shell.app.start_bridge(&ctx).unwrap();
+    let card = s.by_name("Card");
+    let base = s.app().doc.get(card).unwrap().size.y;
+    let (status, body) = send(&mut s, "desigma_create_node", json!({"parent_id":card.0,"kind":"rectangle","width":50,"height":30}));
+    assert_eq!(status, 200, "{body}");
+    let child = NodeId(body["result"]["node"]["id"].as_u64().unwrap());
+    assert!(s.app().doc.get(card).unwrap().size.y > base + 30.0, "child did not grow the hug card");
+    let page = s.app().page.0;
+    let (_, body) = send(&mut s, "desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Target"}));
+    let target = NodeId(body["result"]["node"]["id"].as_u64().unwrap());
+    let (status, body) = send(&mut s, "desigma_move_node", json!({"node_id":child.0,"parent_id":target.0}));
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        (s.app().doc.get(card).unwrap().size.y - base).abs() < 1e-3,
+        "the hug card did not shrink back after the move: {} vs {base}",
+        s.app().doc.get(card).unwrap().size.y
+    );
+    assert_eq!(send(&mut s, "desigma_undo", json!({})).0, 200);
+    assert!(s.app().doc.get(card).unwrap().size.y > base + 30.0, "undo must restore the card and its child");
+}
