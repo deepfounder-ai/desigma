@@ -326,3 +326,41 @@ fn list_files_shows_library_designs_and_outside_copies() {
     session.call("desigma_open_file", json!({"path": outside["path"]})).unwrap();
     assert_eq!(session.call("desigma_get_document", json!({})).unwrap()["name"], "Poster");
 }
+
+/// `desigma_import_svg` inserts layers, so an unsaved import must trip the
+/// same unsaved-changes guards as any other edit instead of being discarded
+/// silently by open/new.
+#[test]
+fn importing_svg_makes_the_session_dirty() {
+    let dir = Workspace::new();
+    let mut s = Session::with_discovery(&dir.0, None).unwrap();
+    let page = s.call("desigma_get_document", json!({})).unwrap()["pages"][0]["node_id"].clone();
+    s.call("desigma_save_file", json!({"path":"empty.desigma"})).unwrap();
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#f00"/></svg>"##;
+    let imported = s.call("desigma_import_svg", json!({"parent_id":page,"svg":svg})).unwrap();
+    assert_eq!(imported["changed"], true);
+    let err = s.call("desigma_open_file", json!({"path":"empty.desigma"})).unwrap_err();
+    assert!(err.contains("Unsaved changes"), "{err}");
+    let err = s.call("desigma_new_document", json!({"name":"Oops"})).unwrap_err();
+    assert!(err.contains("Unsaved changes"), "{err}");
+    s.call("desigma_open_file", json!({"path":"empty.desigma","discard_changes":true})).unwrap();
+    assert_eq!(s.call("desigma_get_document", json!({})).unwrap()["node_count"], 1);
+}
+
+/// Without the dirty flag a late-appearing editor latches the session away
+/// and silently abandons the file session — including an unsaved import.
+#[test]
+fn unsaved_svg_import_blocks_a_late_editor_takeover() {
+    let file = write_discovery(fake_editor(), "tok");
+    let discovery = fs::read(&file).unwrap();
+    fs::remove_file(&file).unwrap();
+    let dir = Workspace::new();
+    let mut s = Session::with_discovery(&dir.0, Some(file.clone())).unwrap();
+    let page = s.call("desigma_get_document", json!({})).unwrap()["pages"][0]["node_id"].clone();
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#f00"/></svg>"##;
+    s.call("desigma_import_svg", json!({"parent_id":page,"svg":svg})).unwrap();
+    fs::write(&file, discovery).unwrap();
+    let err = s.call("desigma_get_document", json!({})).unwrap_err();
+    assert!(err.starts_with("An editor appeared"), "{err}");
+    let _ = fs::remove_file(&file);
+}

@@ -288,6 +288,7 @@ impl Session {
                     name,
                     "desigma_create_node"
                         | "desigma_create_page"
+                        | "desigma_import_svg"
                         | "desigma_update_node"
                         | "desigma_move_node"
                         | "desigma_set_appearance"
