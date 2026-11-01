@@ -249,3 +249,39 @@ fn bridge_file_tools_act_on_the_editor_document() {
     s.shell.app.home = None;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The nine tools added after the bridge's busy-gate was written must be
+/// refused during an active gesture exactly like the originals.
+#[test]
+fn bridge_refuses_the_newer_mutating_tools_while_a_gesture_runs() {
+    let mut s = Sim::new();
+    let ctx = s.ctx.clone();
+    s.shell.app.start_bridge(&ctx).unwrap();
+    let (port, token) = {
+        let b = s.app().bridge.bridge.as_ref().unwrap();
+        (b.port(), b.token().to_string())
+    };
+    // hold the middle button over the canvas: a real pan stays active while the requests arrive
+    let p = s.app().canvas_rect.center();
+    s.mv(p);
+    s.frame(vec![Event::PointerButton { pos: p, button: PointerButton::Middle, pressed: true, modifiers: Modifiers::NONE }]);
+    assert!(matches!(s.app().canvas.inter, crate::canvas::Interaction::Pan));
+    let before = s.app().doc.nodes.len();
+    for tool in [
+        "desigma_create_page",
+        "desigma_move_node",
+        "desigma_set_appearance",
+        "desigma_set_text_style",
+        "desigma_import_svg",
+        "desigma_delete_page",
+        "desigma_add_keyframe",
+        "desigma_apply_animation_preset",
+        "desigma_set_timeline",
+    ] {
+        let t = token.clone();
+        let (status, body) = with_frames(&mut s, move || call(port, &t, tool, json!({})));
+        assert_eq!(status, 422, "{tool}: {body}");
+        assert!(body["error"].as_str().unwrap().contains("busy"), "{tool}: {body}");
+    }
+    assert_eq!(s.app().doc.nodes.len(), before);
+}

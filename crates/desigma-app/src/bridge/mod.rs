@@ -114,16 +114,28 @@ fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
 
 const UNSAVED: &str = "Unsaved changes in the editor: ask the user to save them first (discard_changes=true throws them away)";
 
+/// Tools that mutate the document or the session: refused while a gesture, dialog or
+/// presentation runs, and they commit an open text edit first. Keep in sync when adding
+/// mutating tools (the registry lives in `crates/desigma-mcp/src/{server,engine,motion}.rs`).
 const MUTATING: &[&str] = &[
     "desigma_create_node",
+    "desigma_create_page",
     "desigma_update_node",
+    "desigma_move_node",
+    "desigma_set_appearance",
+    "desigma_set_text_style",
+    "desigma_import_svg",
     "desigma_delete_node",
+    "desigma_delete_page",
     "desigma_undo",
     "desigma_redo",
     "desigma_select_nodes",
     "desigma_open_file",
     "desigma_save_file",
     "desigma_new_document",
+    "desigma_add_keyframe",
+    "desigma_apply_animation_preset",
+    "desigma_set_timeline",
 ];
 
 impl App {
