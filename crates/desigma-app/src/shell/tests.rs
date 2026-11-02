@@ -961,10 +961,10 @@ mod vector;
 mod assets_thumbs;
 mod bridge;
 mod collab;
+mod extwatch;
 mod libraries;
 mod lint;
 mod plugins;
-mod extwatch;
 mod unsaved;
 mod updater;
 
