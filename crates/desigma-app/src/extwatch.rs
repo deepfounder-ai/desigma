@@ -56,6 +56,12 @@ impl App {
 
     /// Called once per frame. Cheap: the stamp is only read once a second.
     pub fn poll_external_change(&mut self, ctx: &Context) {
+        // While a live collaboration session is active, swapping the document on the host
+        // would yank it out from under connected peers, and guests must never replace their
+        // buffer from an external file. Skip watching entirely while connected.
+        if self.collab.active() {
+            return;
+        }
         let Some(w) = self.ext_watch.as_ref() else { return };
         if w.asked || Instant::now() < w.next_check {
             return;
@@ -89,6 +95,15 @@ impl App {
         let view = self.view;
         match crate::io::load_path_noted(&path) {
             Ok((doc, _notes)) => {
+                // Cloud-synced folders (iCloud/Dropbox/OneDrive) often rewrite mtime shortly
+                // after our own save. If the file on disk hashes identical to our current
+                // document, the reload is a no-op that would pointlessly wipe selection and
+                // undo history. Skip it.
+                let disk_hash = crate::home::session::doc_hash(&doc);
+                if self.file_hash == Some(disk_hash) {
+                    self.watch_external(&path);
+                    return;
+                }
                 self.replace_document(doc, Some(path.clone()));
                 self.view = view;
                 self.show_toast(format!("Reloaded {} (changed on disk)", path.display()), false);
