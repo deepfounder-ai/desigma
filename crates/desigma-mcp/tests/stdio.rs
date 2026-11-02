@@ -144,6 +144,45 @@ async fn creating_a_page_appends_it_and_accepts_layers() {
     .expect("MCP subprocess must finish within 30 seconds");
 }
 
+/// Deleting a page takes its layers with it, and undo restores both (#39).
+#[tokio::test]
+async fn deleting_a_page_removes_its_layers_and_undo_restores_them() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+        let pages = |doc: &Value| doc["pages"].as_array().unwrap().len();
+
+        let before = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        let pages_before = pages(&before.structured_content.unwrap());
+
+        let created = client.call_tool(call("desigma_create_page", json!({"name":"Scratch"}))).await.unwrap();
+        let page_id = created.structured_content.unwrap()["page_id"].clone();
+        let rect =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page_id,"kind":"rectangle","name":"card","width":120,"height":40}))).await.unwrap();
+        let rect_id = rect.structured_content.unwrap()["node"]["id"].clone();
+
+        let deleted = client.call_tool(call("desigma_delete_page", json!({"node_id":page_id}))).await.unwrap();
+        assert_eq!(deleted.is_error, Some(false), "{deleted:?}");
+        let after = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        assert_eq!(pages(&after.structured_content.unwrap()), pages_before, "the page is gone from the tab strip");
+        let gone = client.call_tool(call("desigma_get_node", json!({"node_id":rect_id}))).await.unwrap();
+        assert_eq!(gone.is_error, Some(true), "its layers went with it, not orphaned");
+
+        // One undo brings the page and its layer back together.
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let back = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        assert_eq!(pages(&back.structured_content.unwrap()), pages_before + 1);
+        let node = client.call_tool(call("desigma_get_node", json!({"node_id":rect_id}))).await.unwrap();
+        assert_eq!(node.is_error, Some(false), "{node:?}");
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
 /// Restyling and typography are their own tools and land on the undo stack (#32 follow-up).
 #[tokio::test]
 async fn styling_and_typography_are_editable() {

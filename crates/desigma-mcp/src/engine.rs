@@ -171,7 +171,11 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
                 return Err("cannot delete the last page".into());
             }
             let id = n.id;
-            host.exec(Command::Remove { id })?;
+            // `Command::Remove` walks up to the parent to splice the node out, and a
+            // page root has none — it fails with `NotFound(id)`. `RemovePage` is the
+            // page-shaped edit: it drops the id from `Document::pages` and the subtree
+            // from `Document::nodes`, and undoes as `InsertPage`.
+            host.exec(Command::RemovePage { id })?;
             Ok(json!({"page_id":id,"deleted":true}))
         }
         "desigma_move_node" => {
