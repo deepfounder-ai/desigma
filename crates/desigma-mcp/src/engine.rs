@@ -67,6 +67,25 @@ impl Engine {
     }
 }
 
+/// Every engine tool that edits the document. Transports use it to track unsaved edits and the
+/// editor bridge to refuse edits mid-gesture, so a new editing tool must be listed here.
+pub const EDIT_TOOLS: &[&str] = &[
+    "desigma_create_node",
+    "desigma_create_page",
+    "desigma_update_node",
+    "desigma_move_node",
+    "desigma_set_appearance",
+    "desigma_set_text_style",
+    "desigma_import_svg",
+    "desigma_delete_node",
+    "desigma_delete_page",
+    "desigma_undo",
+    "desigma_redo",
+    "desigma_add_keyframe",
+    "desigma_apply_animation_preset",
+    "desigma_set_timeline",
+];
+
 pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, String> {
     match name {
         "desigma_get_document" => {
@@ -746,7 +765,9 @@ pub struct ImportSvgArgs {
 /// parent's coordinates. One undoable `Command::Insert`; bitmap bytes carried
 /// by the SVG are merged into the document as content-addressed assets.
 pub fn import_svg<H: Host>(host: &mut H, a: ImportSvgArgs) -> Result<Value, String> {
-    node(host, a.parent_id)?;
+    if !node(host, a.parent_id)?.kind.is_container() {
+        return Err("parent_id must identify a container".into());
+    }
     if a.svg.len() > 8 * 1024 * 1024 {
         return Err("svg markup exceeds the 8 MiB limit".into());
     }
@@ -789,8 +810,10 @@ pub fn import_svg<H: Host>(host: &mut H, a: ImportSvgArgs) -> Result<Value, Stri
     }
     let root_id = out.nodes.first().map(|n| n.id).ok_or("svg produced no layers")?;
     let images = out.images.len();
-    host.doc_mut().images.append(&mut out.images);
     host.exec(Command::Insert { parent: NodeId(a.parent_id), index, nodes: out.nodes })?;
+    // Only once the layers that use them are in: images sit outside undo, so bytes added
+    // before a failed insert would stay in the document for good.
+    host.doc_mut().images.append(&mut out.images);
     Ok(json!({"node_id":root_id,"name":name,"nodes":count,
         "width":size.map(|s| s.x),"height":size.map(|s| s.y),
         "images":images,"changed":true}))
@@ -1090,6 +1113,34 @@ mod tests {
         assert_eq!(h.execs, 2);
         assert!(call(&mut h, "desigma_undo", json!({})).unwrap()["changed"].as_bool().unwrap());
     }
+    #[test]
+    fn every_document_editing_tool_is_listed_in_edit_tools() {
+        // Writing tools that are not document edits: they are handled by the transport itself.
+        const OTHER: [&str; 4] = ["desigma_export_image", "desigma_export_animation", "desigma_select_nodes", "desigma_save_file"];
+        for t in tools() {
+            let name = t["name"].as_str().unwrap();
+            if t["annotations"]["readOnlyHint"] == false && !OTHER.contains(&name) {
+                assert!(EDIT_TOOLS.contains(&name), "{name} edits the document but is missing from EDIT_TOOLS");
+            }
+        }
+    }
+
+    #[test]
+    fn svg_import_into_a_leaf_is_refused_and_keeps_no_image_bytes() {
+        let mut e = Engine::default();
+        let rect = call(&mut e, "desigma_create_node", json!({"parent_id":1,"kind":"rectangle"})).unwrap()["node"]["id"].as_u64().unwrap();
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><image width=\"4\" height=\"4\" href=\"data:image/png;base64,{png}\"/></svg>"
+        );
+        let err = call(&mut e, "desigma_import_svg", json!({"parent_id":rect,"svg":svg})).unwrap_err();
+        assert!(err.contains("container"), "{err}");
+        assert!(e.doc.images.is_empty());
+        let ok = call(&mut e, "desigma_import_svg", json!({"parent_id":1,"svg":svg})).unwrap();
+        assert_eq!(ok["images"], 1);
+        assert_eq!(e.doc.images.len(), 1);
+    }
+
     #[test]
     fn export_image_is_annotated_as_a_writing_idempotent_tool() {
         let t = tools().into_iter().find(|t| t["name"] == "desigma_export_image").unwrap();

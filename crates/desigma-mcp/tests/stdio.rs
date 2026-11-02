@@ -278,6 +278,10 @@ async fn importing_svg_creates_layers_and_undoes_as_one_step() {
             .unwrap();
         assert_eq!(escape.is_error, Some(true), "paths outside the workspace must be refused");
 
+        // an import is an unsaved edit: starting over must ask first (#56)
+        let fresh = client.call_tool(call("desigma_new_document", json!({"name":"x"}))).await.unwrap();
+        assert_eq!(fresh.is_error, Some(true), "{fresh:?}");
+
         let undone = client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
         assert_eq!(undone.is_error, Some(false));
         let gone = client.call_tool(call("desigma_get_node", json!({"node_id":root}))).await.unwrap();

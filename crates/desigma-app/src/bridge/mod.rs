@@ -33,10 +33,24 @@ impl Host for AppHost<'_> {
             Command::Update { node } => Some(node.id),
             _ => None,
         };
+        // A move lays out the parent it left and the one it joined, and touches the moved layer
+        // so the connectors attached to it are rerouted on commit, as a drag on the canvas does.
+        let moved = match &cmd {
+            Command::Reparent { id, parent, .. } => Some((*id, doc.get(*id).and_then(|n| n.parent), *parent)),
+            _ => None,
+        };
         let mut tx = crate::edit::Tx::new();
         tx.cmd(doc, cmd).map_err(|e| e.to_string())?;
         if let Some(id) = around.filter(|id| doc.get(*id).is_some()) {
             crate::layout::relayout_around(doc, &mut tx.ed, id);
+        }
+        if let Some((id, old, new)) = moved {
+            tx.ed.touch(doc, id);
+            for p in old.into_iter().chain([new]) {
+                if doc.get(p).is_some() {
+                    crate::layout::relayout_around(doc, &mut tx.ed, p);
+                }
+            }
         }
         if self.0.run_tx(tx) {
             Ok(())
@@ -114,17 +128,8 @@ fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
 
 const UNSAVED: &str = "Unsaved changes in the editor: ask the user to save them first (discard_changes=true throws them away)";
 
-const MUTATING: &[&str] = &[
-    "desigma_create_node",
-    "desigma_update_node",
-    "desigma_delete_node",
-    "desigma_undo",
-    "desigma_redo",
-    "desigma_select_nodes",
-    "desigma_open_file",
-    "desigma_save_file",
-    "desigma_new_document",
-];
+/// Bridge-only calls that change the editor, beside the engine's [`engine::EDIT_TOOLS`].
+const MUTATING: &[&str] = &["desigma_select_nodes", "desigma_open_file", "desigma_save_file", "desigma_new_document"];
 
 impl App {
     pub fn start_bridge(&mut self, ctx: &egui::Context) -> Result<(), String> {
@@ -180,7 +185,7 @@ impl App {
         if self.home.is_some() || self.history.viewing.is_some() {
             return Err("Editor is busy: open an editable document first".into());
         }
-        if MUTATING.contains(&name) {
+        if MUTATING.contains(&name) || engine::EDIT_TOOLS.contains(&name) {
             if self.proto.present.is_some()
                 || self.scrub.is_some()
                 || self.dialog.is_some()

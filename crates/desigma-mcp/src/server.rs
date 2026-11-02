@@ -284,23 +284,7 @@ impl Session {
             }
             _ => {
                 let result = self.engine.call(name, args)?;
-                if matches!(
-                    name,
-                    "desigma_create_node"
-                        | "desigma_create_page"
-                        | "desigma_update_node"
-                        | "desigma_move_node"
-                        | "desigma_set_appearance"
-                        | "desigma_set_text_style"
-                        | "desigma_delete_node"
-                        | "desigma_delete_page"
-                        | "desigma_undo"
-                        | "desigma_redo"
-                        | "desigma_add_keyframe"
-                        | "desigma_apply_animation_preset"
-                        | "desigma_set_timeline"
-                ) && result.get("changed").and_then(Value::as_bool) != Some(false)
-                {
+                if crate::engine::EDIT_TOOLS.contains(&name) && result.get("changed").and_then(Value::as_bool) != Some(false) {
                     self.dirty = true;
                 }
                 Ok(result)
