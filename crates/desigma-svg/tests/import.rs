@@ -417,3 +417,124 @@ fn images_next_to_the_svg_file_load_and_others_do_not() {
     assert_eq!(image_count(&doc), 0);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// Every Text node under `id`, in document order.
+fn texts(doc: &Document, id: NodeId) -> Vec<&Node> {
+    let mut ids = Vec::new();
+    doc.walk(id, |n, _| {
+        if matches!(n.kind, NodeKind::Text(_)) {
+            ids.push(n.id);
+        }
+    });
+    ids.iter().filter_map(|i| doc.get(*i)).collect()
+}
+
+/// Content of every Text node under `id`, in document order.
+fn text_contents(doc: &Document, id: NodeId) -> Vec<String> {
+    let mut out = Vec::new();
+    doc.walk(id, |n, _| {
+        if let NodeKind::Text(t) = &n.kind {
+            out.push(t.content.clone());
+        }
+    });
+    out
+}
+
+#[test]
+fn text_outside_the_bundled_font_keeps_its_content() {
+    // usvg only knows the bundled Inter face, so a font family it cannot find lays
+    // out zero glyphs and the element used to vanish (no node, no pixels). The
+    // resolved chunks are kept so an editable Text node still comes out.
+    let (doc, id) = import(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+          <text x="20" y="40" font-family="PingFang SC" font-size="12" font-weight="500" fill="#64748b">用户名</text>
+        </svg>"##,
+    );
+    let k = kids(&doc, id);
+    assert_eq!(k.len(), 1, "{}", dump(&doc, id));
+    let NodeKind::Text(t) = &k[0].kind else { panic!("{}", dump(&doc, id)) };
+    assert_eq!(t.content, "用户名");
+    assert_eq!((t.style.font_size, t.style.font_weight), (12.0, 500));
+    assert_eq!(t.style.font_family, "PingFang SC");
+    assert_eq!(k[0].transform.tx, 20.0);
+    // Baseline `y=40`: the box sits above it, not on it.
+    assert!(k[0].transform.ty < 40.0 && k[0].transform.ty > 25.0, "{}", dump(&doc, id));
+}
+
+#[test]
+fn shaped_text_is_not_duplicated_by_the_chunk_fallback() {
+    let (doc, id) = import(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+          <text x="20" y="40" font-family="Inter" font-size="16" fill="#000">Hello</text>
+          <text x="20" y="80" font-family="PingFang SC" font-size="12" fill="#000">你好</text>
+        </svg>"##,
+    );
+    assert_eq!(text_contents(&doc, id), vec!["Hello", "你好"], "{}", dump(&doc, id));
+}
+
+#[test]
+fn unshaped_text_in_a_translated_group_keeps_its_place_and_tspans() {
+    // What Figma and Illustrator write: text wrapped in translated groups, one
+    // <tspan> per style run, no x/y on the spans.
+    let (doc, id) = import(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+          <g transform="translate(30 10)">
+            <text x="5" y="40" font-family="PingFang SC" font-size="12"><tspan>用户</tspan><tspan font-weight="700">名</tspan></text>
+          </g>
+        </svg>"##,
+    );
+    let t = texts(&doc, id);
+    assert_eq!(t.len(), 1, "{}", dump(&doc, id));
+    let NodeKind::Text(text) = &t[0].kind else { unreachable!() };
+    assert_eq!(text.content, "用户名");
+    assert_eq!(text.style.font_family, "PingFang SC");
+    // 30 from the group, 5 from the element.
+    assert_eq!(t[0].transform.tx, 35.0, "{}", dump(&doc, id));
+}
+
+#[test]
+fn unshaped_text_follows_the_viewbox_scale() {
+    let (doc, id) = import(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24">
+          <rect width="4" height="4" fill="#00f"/>
+          <text x="6" y="12" font-family="PingFang SC" font-size="4">汉字</text>
+        </svg>"##,
+    );
+    let t = texts(&doc, id);
+    assert_eq!(t.len(), 1, "{}", dump(&doc, id));
+    // The viewBox scales user units by 2; the text box has to scale with it, like
+    // the rect next to it (the scale may live on the text or on a group around it).
+    let w = doc.world_transform(t[0].id);
+    assert_eq!((w.a, w.d), (2.0, 2.0), "{}", dump(&doc, id));
+    // `import` places the frame at (100, 50); the user-space x=6 becomes 2×6.
+    assert!((w.tx - 100.0 - 12.0).abs() < 1e-3, "{}", dump(&doc, id));
+    assert!((w.ty - 50.0 - 2.0 * t[0].transform.ty).abs() < 1e-3, "{}", dump(&doc, id));
+}
+
+#[test]
+fn text_kept_as_outlines_is_not_emitted_twice() {
+    // Vertical text with a font usvg does have: collect() refuses it, the glyphs
+    // flatten to real outlines — so no Text node may be added on top.
+    let (doc, id) = import(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+          <text x="20" y="40" font-family="Inter" font-size="16" writing-mode="vertical-rl">Hello</text>
+        </svg>"##,
+    );
+    assert!(texts(&doc, id).is_empty(), "{}", dump(&doc, id));
+    assert!(kids(&doc, id).iter().any(|n| matches!(n.kind, NodeKind::Vector { .. })), "{}", dump(&doc, id));
+}
+
+#[test]
+fn unshaped_text_inherits_fill_and_font_from_its_group() {
+    let (doc, id) = import(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+          <g fill="#ff0000" font-size="20"><text x="10" y="30" font-family="PingFang SC">汉字</text></g>
+        </svg>"##,
+    );
+    let t = texts(&doc, id);
+    assert_eq!(t.len(), 1, "{}", dump(&doc, id));
+    let NodeKind::Text(text) = &t[0].kind else { unreachable!() };
+    assert_eq!(text.style.font_size, 20.0, "{}", dump(&doc, id));
+    assert_eq!(text.style.fills.len(), 1, "{}", dump(&doc, id));
+    assert!(matches!(text.style.fills[0].kind, PaintKind::Solid(c) if c == Color::from_hex("#ff0000").unwrap()), "{}", dump(&doc, id));
+}
