@@ -102,16 +102,14 @@ fn active_collab_session_skips_external_file_polling() {
     // Mark collaboration active by setting joining state.
     struct DummyGuest;
     impl crate::collab::link::GuestLink for DummyGuest {
-        fn drain(&self) -> Vec<crate::collab::link::GuestEv> { vec![] }
+        fn drain(&self) -> Vec<crate::collab::link::GuestEv> {
+            vec![]
+        }
         fn send(&self, _bytes: Vec<u8>) {}
         fn send_presence(&self, _bytes: &[u8]) {}
         fn leave(&self) {}
     }
-    s.shell.app.collab.joining = Some(crate::collab::Joining {
-        link: Box::new(DummyGuest),
-        role: desigma_collab::Role::Editor,
-        redial: None,
-    });
+    s.shell.app.collab.joining = Some(crate::collab::Joining { link: Box::new(DummyGuest), role: desigma_collab::Role::Editor, redial: None });
     assert!(s.shell.app.collab.active(), "collab must be active");
 
     write_doc(&path, "FromOutside");
@@ -143,4 +141,20 @@ fn cloud_sync_touch_with_identical_content_does_not_reload() {
     assert_eq!(s.app().doc.name, "UnchangedContent");
     let reloaded_toast = s.shell.app.toast.as_ref().is_some_and(|t| t.text.contains("Reloaded"));
     assert!(!reloaded_toast, "should not trigger reload toast when content hash matches");
+}
+
+#[test]
+fn cloud_sync_touch_does_not_ask_about_unsaved_edits() {
+    let path = scratch("cloud_sync_dirty");
+    write_doc(&path, "Saved");
+    let mut s = Sim::new();
+    s.shell.app.open_path(path.clone());
+    s.shell.app.doc.name = "Mine".into();
+
+    // The same bytes again, later: a sync client touching our own save.
+    write_doc(&path, "Saved");
+    s.frame(vec![]);
+    s.frame(vec![]);
+    assert_eq!(s.app().doc.name, "Mine");
+    assert!(!s.app().ext_watch.as_ref().unwrap().asked, "nothing changed on disk, so nothing to ask");
 }

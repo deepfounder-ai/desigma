@@ -75,7 +75,9 @@ impl App {
         if now == seen {
             return;
         }
-        let dirty = self.edits_unsaved();
+        // A sync client rewriting the time of our own save is not a change; with unsaved
+        // edits it would otherwise ask about a file nobody else touched.
+        let dirty = self.edits_unsaved() && !self.disk_matches_saved(&path);
         if let Some(w) = self.ext_watch.as_mut() {
             // Remember the version we just saw so a dismissed prompt does not come back every second.
             w.seen = now;
@@ -86,6 +88,11 @@ impl App {
         } else {
             self.reload_watched();
         }
+    }
+
+    /// Whether the file on disk holds exactly the version we last opened or saved.
+    fn disk_matches_saved(&self, path: &Path) -> bool {
+        self.file_hash.is_some_and(|h| crate::io::load_path_noted(path).is_ok_and(|(doc, _)| crate::home::session::doc_hash(&doc) == h))
     }
 
     /// Reload the watched file from disk, keeping the user's viewport where it was.
@@ -147,11 +154,7 @@ fn unique_copy_path(path: &Path) -> PathBuf {
     let ext = path.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "desigma".into());
     let mut n = 1;
     loop {
-        let name = if n == 1 {
-            format!("{stem} (my copy).{ext}")
-        } else {
-            format!("{stem} (my copy {n}).{ext}")
-        };
+        let name = if n == 1 { format!("{stem} (my copy).{ext}") } else { format!("{stem} (my copy {n}).{ext}") };
         let candidate = dir.join(name);
         if !candidate.exists() {
             return candidate;
@@ -174,10 +177,7 @@ pub fn dialog(app: &mut App, ctx: &Context) {
     const PAD: f32 = 16.0;
     const BTN: f32 = 32.0;
     let body = crate::i18n::tr("Another program changed this file on disk. You have unsaved edits.");
-    let r = Rect::from_min_size(
-        Pos2::new(screen.right() - W - 20.0, screen.bottom() - 20.0 - 206.0),
-        Vec2::new(W, 206.0),
-    );
+    let r = Rect::from_min_size(Pos2::new(screen.right() - W - 20.0, screen.bottom() - 20.0 - 206.0), Vec2::new(W, 206.0));
     let mut answer: Option<Answer> = None;
     egui::Area::new(Id::new("external-change")).order(Order::Foreground).fixed_pos(r.min).interactable(true).show(ctx, |ui| {
         let p = ui.painter().clone();
@@ -185,8 +185,7 @@ pub fn dialog(app: &mut App, ctx: &Context) {
         crate::widgets::menu_panel(&p, r, crate::theme::MENU_RADIUS);
         let x0 = r.left() + PAD;
         let y = r.top() + PAD;
-        p.text(Pos2::new(x0, y + 8.0), Align2::LEFT_CENTER, crate::i18n::tr("File changed on disk"),
-               crate::theme::font_body_strong(), crate::theme::TEXT);
+        p.text(Pos2::new(x0, y + 8.0), Align2::LEFT_CENTER, crate::i18n::tr("File changed on disk"), crate::theme::font_body_strong(), crate::theme::TEXT);
         let g = p.layout(body.to_string(), crate::theme::font_small(), crate::theme::TEXT_SECONDARY, W - PAD * 2.0);
         p.galley(Pos2::new(x0, y + 30.0), g, crate::theme::TEXT_SECONDARY);
         let g = p.layout(name, crate::theme::font_small(), crate::theme::TEXT_TERTIARY, W - PAD * 2.0);
