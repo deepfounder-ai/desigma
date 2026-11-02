@@ -3,7 +3,7 @@
 #
 #   scripts/package.sh <target-triple> <version> [bin-dir]
 #
-# Expects `desigma` and `desigma-diff` already built in release mode. bin-dir
+# Expects `desigma`, `desigma-diff` and `desigma-mcp` already built in release mode. bin-dir
 # defaults to target/<triple>/release, falling back to target/release (a plain
 # `cargo build --release` without --target). Writes into dist/:
 #   desigma-<version>-<triple>.zip     (Windows) or .tar.gz (Linux)
@@ -31,7 +31,7 @@ stage=$root/dist/$name
 rm -rf "$stage"
 mkdir -p "$stage"
 
-for bin in desigma desigma-diff; do
+for bin in desigma desigma-diff desigma-mcp; do
   cp "$bin_dir/$bin$exe" "$stage/"
 done
 cp LICENSE-MIT LICENSE-APACHE README.md "$stage/"
@@ -47,7 +47,7 @@ case "$target" in
     done
     cp "$root/packaging/linux/desigma.desktop" "$root/packaging/linux/desigma-mime.xml" "$stage/"
     cp "$root/packaging/linux/install.sh" "$stage/install.sh"
-    chmod +x "$stage/install.sh" "$stage/desigma" "$stage/desigma-diff"
+    chmod +x "$stage/install.sh" "$stage/desigma" "$stage/desigma-diff" "$stage/desigma-mcp"
     ;;
 esac
 

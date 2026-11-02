@@ -1,3 +1,7 @@
+// Claude launches this process with its own stdin and stdout. A console subsystem would open a
+// command window on Windows; a windowed process keeps those pipes and shows nothing.
+#![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
+
 use desigma_mcp::server::DesigmaServer;
 use rmcp::{transport::stdio, ServiceExt};
 

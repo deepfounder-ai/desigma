@@ -3,7 +3,7 @@
 #
 #   scripts/package-windows-installer.sh <version> [bin-dir]
 #
-# Expects desigma.exe and desigma-diff.exe built in release mode (bin-dir defaults to
+# Expects desigma.exe, desigma-diff.exe and desigma-mcp.exe built in release mode (bin-dir defaults to
 # target/x86_64-pc-windows-msvc/release, then target/release). Needs `iscc` (Inno Setup 6) on PATH
 # or installed in a default location. Writes into dist/:
 #   desigma-<version>-x86_64-windows-setup.exe

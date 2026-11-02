@@ -1531,6 +1531,7 @@ dependencies = [
  "desigma-doc",
  "desigma-export",
  "desigma-library",
+ "desigma-svg",
  "rmcp",
  "serde",
  "serde_json",

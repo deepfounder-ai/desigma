@@ -1,3 +1,7 @@
+// Release builds are a windowed app: double-clicking opens no command prompt. Debug builds stay
+// console programs. Tests keep the console too, so `cargo test --release` can still print.
+#![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
+
 mod app;
 mod board;
 mod bridge;
@@ -28,6 +32,7 @@ mod lint;
 mod loopback;
 #[cfg(target_os = "macos")]
 mod macos;
+mod mcp_link;
 mod motion;
 mod ops;
 mod panels;
@@ -77,8 +82,24 @@ fn window_icon() -> Option<egui::IconData> {
     Some(egui::IconData { rgba: img.into_raw(), width, height })
 }
 
+/// A windowed process has no console of its own. If it was started from a terminal, attach to
+/// that one so `--help`, `--version` and errors still print there. Rust reads the console handles
+/// on the first print, so this has to run before any output.
+#[cfg(all(windows, not(debug_assertions), not(test)))]
+fn attach_parent_console() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    unsafe {
+        AttachConsole(u32::MAX);
+    }
+}
+
 fn main() {
     crash::install();
+    #[cfg(all(windows, not(debug_assertions), not(test)))]
+    attach_parent_console();
     let opts = match cli::parse(std::env::args().skip(1)) {
         Ok(o) => o,
         Err(e) => {

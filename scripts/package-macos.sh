@@ -3,8 +3,8 @@
 #
 #   scripts/package-macos.sh <version> [arm64-bin-dir] [x86_64-bin-dir]
 #
-# Run on macOS (needs lipo, codesign, hdiutil; iconutil is used when present). Expects `desigma` and
-# `desigma-diff` already built in release mode for both targets. The bin dirs default to
+# Run on macOS (needs lipo, codesign, hdiutil; iconutil is used when present). Expects `desigma`,
+# `desigma-diff` and `desigma-mcp` already built in release mode for both targets. The bin dirs default to
 # target/aarch64-apple-darwin/release and target/x86_64-apple-darwin/release. Writes into dist/:
 #   desigma-<version>-macos.dmg              drag-to-Applications disk image (the main download)
 #   desigma-<version>-macos-universal.tar.gz desigma.app + licenses + README, for scripting
@@ -36,7 +36,7 @@ app=$work/stage/desigma.app
 macos_dir=$app/Contents/MacOS
 res_dir=$app/Contents/Resources
 mkdir -p "$macos_dir" "$res_dir"
-for bin in desigma desigma-diff; do
+for bin in desigma desigma-diff desigma-mcp; do
   for d in "$arm_dir" "$x64_dir"; do
     [ -f "$d/$bin" ] || { echo "package-macos.sh: missing $d/$bin" >&2; exit 1; }
   done
@@ -69,6 +69,7 @@ cp "$root/crates/desigma-app/assets/icons/lucide/LICENSE" "$res_dir/licenses/Luc
 
 # 4. Ad-hoc sign. Sign the helper tool first, then the bundle.
 codesign --force --sign - "$macos_dir/desigma-diff"
+codesign --force --sign - "$macos_dir/desigma-mcp"
 codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 

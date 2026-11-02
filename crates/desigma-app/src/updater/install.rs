@@ -116,13 +116,17 @@ fn prepare_portable(exe: &Path, dir: &Path, archive: &Path) -> Result<Prepared, 
     let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(|e| format!("the download is not a zip file ({e})"))?;
     let main = exe.file_name().ok_or("the program has no name")?.to_string_lossy().into_owned();
     let mut pairs: Vec<(PathBuf, PathBuf)> = Vec::new();
-    // desigma-diff.exe is replaced only when it sits beside the exe; the main binary goes last
-    for name in ["desigma-diff.exe", "desigma.exe"] {
-        if name != "desigma.exe" && !dir.join(name).is_file() {
+    // desigma-diff.exe is replaced only when it sits beside the exe. desigma-mcp.exe is added when
+    // the archive has it. The main binary goes last.
+    for name in ["desigma-mcp.exe", "desigma-diff.exe", "desigma.exe"] {
+        if name == "desigma-diff.exe" && !dir.join(name).is_file() {
             continue;
         }
         let new = dir.join(name.replace(".exe", ".new.exe"));
         if let Err(e) = extract_by_name(&mut zip, name, &new, b"MZ") {
+            if name == "desigma-mcp.exe" && e.contains("has no") {
+                continue;
+            }
             for (_, staged) in &pairs {
                 let _ = std::fs::remove_file(staged);
             }
@@ -220,6 +224,9 @@ fn prepare_linux(exe: &Path, dir: &Path, archive: &Path, work: &Path) -> Result<
     let mut sources = vec![];
     if dir.join("desigma-diff").is_file() && root.join("desigma-diff").is_file() {
         sources.push((root.join("desigma-diff"), dir.join("desigma-diff")));
+    }
+    if root.join("desigma-mcp").is_file() {
+        sources.push((root.join("desigma-mcp"), dir.join("desigma-mcp")));
     }
     sources.push((main, exe.to_path_buf()));
     let mut pairs: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -430,11 +437,14 @@ fn make_executable(path: &Path) -> std::io::Result<()> {
 pub fn leftovers(os: Os, exe: &Path) -> Vec<PathBuf> {
     let Some(dir) = exe.parent() else { return vec![] };
     let mut out: Vec<PathBuf> = match os {
-        Os::Windows => ["desigma.old.exe", "desigma-diff.old.exe", "desigma.new.exe", "desigma-diff.new.exe"].iter().map(|n| dir.join(n)).collect(),
+        Os::Windows => ["desigma.old.exe", "desigma-diff.old.exe", "desigma-mcp.old.exe", "desigma.new.exe", "desigma-diff.new.exe", "desigma-mcp.new.exe"]
+            .iter()
+            .map(|n| dir.join(n))
+            .collect(),
         Os::Mac => app_bundle(exe).and_then(|app| Some(app.parent()?.join(".desigma-update"))).into_iter().collect(),
         Os::Linux => {
             let name = exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            [name.as_str(), "desigma-diff"].iter().map(|n| dir.join(format!(".{n}.update"))).collect()
+            [name.as_str(), "desigma-diff", "desigma-mcp"].iter().map(|n| dir.join(format!(".{n}.update"))).collect()
         }
     };
     out.push(work_dir());

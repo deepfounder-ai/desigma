@@ -4,11 +4,11 @@
 #   ./install.sh            install under ~/.local
 #   PREFIX=/some/dir ./install.sh   install elsewhere (bin/ and share/ below it)
 #
-# To remove: delete ~/.local/bin/desigma, ~/.local/bin/desigma-diff,
+# To remove: delete ~/.local/bin/desigma, ~/.local/bin/desigma-diff, ~/.local/bin/desigma-mcp,
 # ~/.local/share/applications/desigma.desktop, the desigma.png files under
 # ~/.local/share/icons/hicolor/*/apps/ and ~/.local/share/mime/packages/desigma.xml.
 #
-# DESIGMA_RESOURCES_ONLY=1 skips the two binaries: the in-app updater has already swapped them in
+# DESIGMA_RESOURCES_ONLY=1 skips the binaries: the in-app updater has already swapped them in
 # (atomically, while desigma was running) and only needs the desktop entry, icons and file types refreshed.
 set -eu
 
@@ -19,6 +19,7 @@ install -d "$prefix/bin" "$prefix/share/applications" "$prefix/share/mime/packag
 if [ -z "${DESIGMA_RESOURCES_ONLY:-}" ]; then
   install -m 755 "$here/desigma" "$prefix/bin/desigma"
   [ -f "$here/desigma-diff" ] && install -m 755 "$here/desigma-diff" "$prefix/bin/desigma-diff"
+  [ -f "$here/desigma-mcp" ] && install -m 755 "$here/desigma-mcp" "$prefix/bin/desigma-mcp"
 fi
 # Point Exec at the installed binary so launchers work even when ~/.local/bin is not on their PATH.
 sed "s|^Exec=desigma|Exec=$prefix/bin/desigma|" "$here/desigma.desktop" > "$prefix/share/applications/desigma.desktop"

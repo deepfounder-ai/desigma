@@ -735,6 +735,7 @@ impl Shell {
         }
         crate::home::show(&mut self.app, ui);
         crate::home::dialog::show(&mut self.app, ctx);
+        crate::mcp_link::show(&mut self.app, ctx);
         crate::collab::ui::join_dialog(&mut self.app, ctx);
         crate::unsaved::dialog(&mut self.app, ctx);
         crate::extwatch::dialog(&mut self.app, ctx);
@@ -868,6 +869,7 @@ impl Shell {
         crate::plugins::ui::show(&mut self.app, &ctx);
         crate::updater::ui::show(&mut self.app, &ctx);
         crate::bridge::ui::show(&mut self.app, &ctx);
+        crate::mcp_link::show(&mut self.app, &ctx);
         crate::collab::ui::share_popover(&mut self.app, &ctx);
         crate::collab::ui::requests(&mut self.app, &ctx);
         crate::collab::ui::join_dialog(&mut self.app, &ctx);

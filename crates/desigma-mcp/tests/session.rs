@@ -304,3 +304,25 @@ fn file_session_switches_to_a_late_editor_only_without_unsaved_edits() {
 
     let _ = fs::remove_file(&file);
 }
+
+#[test]
+fn list_files_shows_library_designs_and_outside_copies() {
+    let dir = Workspace::new();
+    let lib = desigma_library::Library::open(&dir.0).unwrap();
+    let project = lib.create_project("Inbox").unwrap();
+    let mut doc = desigma_doc::Document::new("Poster");
+    doc.add_page("Page 1");
+    lib.create_file(&project.id, None, "Poster", &doc).unwrap();
+    let shared = dir.0.join(desigma_library::SHARED_DIR);
+    fs::create_dir(&shared).unwrap();
+    fs::write(shared.join("From Downloads.desigma"), doc.to_json().unwrap()).unwrap();
+
+    let mut session = Session::with_discovery(&dir.0, None).unwrap();
+    let listed = session.call("desigma_list_files", json!({})).unwrap();
+    let files = listed["files"].as_array().unwrap();
+    assert!(files.iter().any(|f| f["name"] == "Poster" && f["project"] == "Inbox"), "{listed}");
+    let outside = files.iter().find(|f| f["name"] == "From Downloads").unwrap();
+    assert_eq!(outside["path"], "shared/From Downloads.desigma");
+    session.call("desigma_open_file", json!({"path": outside["path"]})).unwrap();
+    assert_eq!(session.call("desigma_get_document", json!({})).unwrap()["name"], "Poster");
+}

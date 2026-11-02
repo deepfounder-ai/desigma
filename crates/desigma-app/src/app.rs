@@ -129,6 +129,10 @@ pub struct App {
     pub libs: crate::libraries::LibrariesState,
     pub plugins: crate::plugins::PluginsState,
     pub bridge: crate::bridge::BridgeState,
+    /// Preferences / home → Claude… connection dialog.
+    pub mcp_dialog: bool,
+    /// Why the last Claude connection attempt failed, shown in the dialog.
+    pub mcp_error: Option<String>,
     pub proto: crate::proto::ProtoState,
     /// Find and replace panel state (Ctrl+F).
     pub find: crate::find::FindState,
@@ -203,6 +207,8 @@ impl App {
             libs: Default::default(),
             plugins: Default::default(),
             bridge: Default::default(),
+            mcp_dialog: false,
+            mcp_error: None,
             proto: Default::default(),
             find: Default::default(),
             ui: UiState { pixel_grid: true, ..UiState::default() },

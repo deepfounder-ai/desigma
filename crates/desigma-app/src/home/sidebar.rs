@@ -71,7 +71,8 @@ pub fn show(h: &mut Home, ui: &mut Ui, rect: Rect, acts: &mut Vec<Act>) {
 
     // ---- project tree (scrolls)
     let trash_h = 52.0;
-    let list = Rect::from_min_max(Pos2::new(x0, y), Pos2::new(x0 + w, rect.bottom() - trash_h));
+    let footer_h = trash_h + ROW_H;
+    let list = Rect::from_min_max(Pos2::new(x0, y), Pos2::new(x0 + w, rect.bottom() - footer_h));
     let rows = tree_rows(h);
     let content_h = rows.len() as f32 * ROW_H + 8.0;
     crate::panels::wheel_scroll(ui, list, &mut h.side_scroll, content_h);
@@ -140,7 +141,11 @@ pub fn show(h: &mut Home, ui: &mut Ui, rect: Rect, acts: &mut Vec<Act>) {
         h.menu = secondary;
     }
 
-    // ---- trash
+    // ---- Claude, then trash
+    let cr = Rect::from_min_size(Pos2::new(x0 + 8.0, rect.bottom() - footer_h + 4.0), Vec2::new(w - 16.0, ROW_H));
+    if row(ui, cr, Id::new("home-claude"), Icon::Link, "Claude", 0.0, false, false, "home-claude").clicked() {
+        acts.push(Act::Mcp);
+    }
     widgets::hline(&p, x0, x0 + w, rect.bottom() - trash_h, theme::BORDER);
     let tr = Rect::from_min_size(Pos2::new(x0 + 8.0, rect.bottom() - trash_h + 10.0), Vec2::new(w - 16.0, ROW_H));
     let n = h.snap.trash.len();

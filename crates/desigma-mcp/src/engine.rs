@@ -1,5 +1,6 @@
 //! Typed, local document operations shared by the MCP transport and future bridges.
-use desigma_doc::{Command, Document, History, Node, NodeId, NodeKind, Rect, TextStyle};
+use desigma_doc::{Color, Command, Document, History, LineHeight, Node, NodeId, NodeKind, Paint, Rect, TextAlignH, TextAlignV, TextStyle};
+use desigma_svg::ImportOptions;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 
@@ -26,6 +27,11 @@ pub trait Host {
     fn can_redo(&self) -> bool;
     /// Allocates a fresh node id on the document.
     fn alloc_id(&mut self) -> Result<NodeId, String>;
+    /// Direct document access for content-addressed assets only (bitmap bytes
+    /// carried by an imported SVG). Not recorded by undo, exactly like the
+    /// editor's own SVG import, so callers must apply them together with an
+    /// undoable insert.
+    fn doc_mut(&mut self) -> &mut Document;
 }
 
 impl Host for Engine {
@@ -50,6 +56,9 @@ impl Host for Engine {
     fn alloc_id(&mut self) -> Result<NodeId, String> {
         self.doc.try_alloc_id().ok_or_else(|| "Document has exhausted node IDs".into())
     }
+    fn doc_mut(&mut self) -> &mut Document {
+        &mut self.doc
+    }
 }
 
 impl Engine {
@@ -57,6 +66,25 @@ impl Engine {
         call(self, name, args)
     }
 }
+
+/// Every engine tool that edits the document. Transports use it to track unsaved edits and the
+/// editor bridge to refuse edits mid-gesture, so a new editing tool must be listed here.
+pub const EDIT_TOOLS: &[&str] = &[
+    "desigma_create_node",
+    "desigma_create_page",
+    "desigma_update_node",
+    "desigma_move_node",
+    "desigma_set_appearance",
+    "desigma_set_text_style",
+    "desigma_import_svg",
+    "desigma_delete_node",
+    "desigma_delete_page",
+    "desigma_undo",
+    "desigma_redo",
+    "desigma_add_keyframe",
+    "desigma_apply_animation_preset",
+    "desigma_set_timeline",
+];
 
 pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, String> {
     match name {
@@ -133,6 +161,36 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         }
         "desigma_create_node" => create(host, parse(args)?),
         "desigma_update_node" => update(host, parse(args)?),
+        "desigma_delete_page" => {
+            let a: NodeArgs = parse(args)?;
+            let n = node(host, a.node_id)?;
+            if !matches!(n.kind, NodeKind::Page { .. }) || n.parent.is_some() {
+                return Err("desigma_delete_page only accepts a page node id".into());
+            }
+            if host.doc().pages.len() <= 1 {
+                return Err("cannot delete the last page".into());
+            }
+            let id = n.id;
+            host.exec(Command::Remove { id })?;
+            Ok(json!({"page_id":id,"deleted":true}))
+        }
+        "desigma_move_node" => {
+            let a: MoveNodeArgs = parse(args)?;
+            move_node(host, a)
+        }
+        "desigma_create_page" => {
+            let a: CreatePageArgs = parse(args)?;
+            create_page(host, a)
+        }
+        "desigma_set_appearance" => {
+            let a: AppearanceArgs = parse(args)?;
+            set_appearance(host, a)
+        }
+        "desigma_set_text_style" => {
+            let a: TextStyleArgs = parse(args)?;
+            set_text_style(host, a)
+        }
+        "desigma_import_svg" => import_svg(host, parse(args)?),
         "desigma_delete_node" => {
             let a: NodeArgs = parse(args)?;
             let n = node(host, a.node_id)?;
@@ -356,6 +414,198 @@ fn update<H: Host>(host: &mut H, a: UpdateArgs) -> Result<Value, String> {
     Ok(json!({"node":host.doc().get(NodeId(a.node_id)),"changed":changed}))
 }
 
+/// Move one layer under another container, keeping its parent-relative transform.
+///
+/// Refuses page roots, the layer's own subtree and non-container targets, so the
+/// document can never be put into a cycle. Supports undo.
+fn move_node<H: Host>(host: &mut H, a: MoveNodeArgs) -> Result<Value, String> {
+    let moving = node(host, a.node_id)?.clone();
+    if moving.parent.is_none() {
+        return Err("page roots cannot be moved by this tool".into());
+    }
+    if a.node_id == a.parent_id {
+        return Err("a layer cannot be moved into itself".into());
+    }
+    let target = node(host, a.parent_id)?;
+    if !target.kind.is_container() {
+        return Err(format!("node {} is not a container", a.parent_id));
+    }
+    if host.doc().is_ancestor(NodeId(a.node_id), NodeId(a.parent_id)) {
+        return Err("a layer cannot be moved into its own subtree".into());
+    }
+    let index = a.index.unwrap_or(target.children.len()).min(target.children.len());
+    if moving.parent == Some(NodeId(a.parent_id)) && target.children.get(index) == Some(&NodeId(a.node_id)) {
+        return Ok(json!({"node_id":a.node_id,"parent_id":a.parent_id,"index":index,"changed":false}));
+    }
+    host.exec(Command::Reparent { id: NodeId(a.node_id), parent: NodeId(a.parent_id), index })?;
+    Ok(json!({"node_id":a.node_id,"parent_id":a.parent_id,"index":index,"changed":true}))
+}
+
+/// Append a new empty page and return it, ready to receive layers.
+///
+/// Pages live in `Document::pages`, not under another node, so this uses
+/// `Command::InsertPage` and stays undoable like every other edit.
+fn create_page<H: Host>(host: &mut H, a: CreatePageArgs) -> Result<Value, String> {
+    let name = a.name.trim();
+    if name.is_empty() {
+        return Err("name must not be empty".into());
+    }
+    bounded_text("name", name, 1024)?;
+    let background = match a.background.as_deref() {
+        Some(spec) => colour(spec, "background")?,
+        None => Color::from_hex("#ffffff").expect("white is a valid colour"),
+    };
+    let index = host.doc().pages.len();
+    // Allocate only after every argument has passed validation.
+    let id = host.alloc_id()?;
+    let mut page = Node::new(id, NodeKind::Page { background });
+    page.name = name.to_string();
+    host.exec(Command::InsertPage { index, nodes: vec![page] })?;
+    Ok(json!({"page_id":id,"index":index,"name":name,"changed":true}))
+}
+
+/// Restyle a layer's fill, stroke, corner radius and opacity.
+///
+/// A text layer keeps its colour in `TextStyle::fills`, so a `fill` on a text node is
+/// written there rather than into the unused `Node::fills`. Supports undo.
+fn set_appearance<H: Host>(host: &mut H, a: AppearanceArgs) -> Result<Value, String> {
+    let mut node = node(host, a.node_id)?.clone();
+    if node.parent.is_none() {
+        return Err("page roots cannot be restyled by this tool".into());
+    }
+    let mut applied: Vec<&str> = Vec::new();
+    if let Some(spec) = a.fill.as_deref() {
+        let paints = if spec.trim().eq_ignore_ascii_case("none") { Vec::new() } else { vec![Paint::solid(colour(spec, "fill")?)] };
+        match &mut node.kind {
+            NodeKind::Text(props) => props.style.fills = paints,
+            _ => node.fills = paints,
+        }
+        applied.push("fill");
+    }
+    if let Some(spec) = a.stroke.as_deref() {
+        node.stroke.paints = if spec.trim().eq_ignore_ascii_case("none") { Vec::new() } else { vec![Paint::solid(colour(spec, "stroke")?)] };
+        if let Some(width) = a.stroke_width {
+            node.stroke.weight = stroke_weight(width)?;
+        }
+        applied.push("stroke");
+    } else if let Some(width) = a.stroke_width {
+        node.stroke.weight = stroke_weight(width)?;
+        applied.push("stroke_width");
+    }
+    if let Some(radius) = a.corner_radius {
+        if !radius.is_finite() || !(0.0..=1_000_000.0).contains(&radius) {
+            return Err("corner_radius must be finite and between 0 and 1000000".into());
+        }
+        node.corner_radii = [radius; 4];
+        applied.push("corner_radius");
+    }
+    if let Some(opacity) = a.opacity {
+        if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+            return Err("opacity must be between 0 and 1".into());
+        }
+        node.opacity = opacity;
+        applied.push("opacity");
+    }
+    commit(host, node, applied)
+}
+
+/// Set a text layer's content and typography (size, weight, family, line height,
+/// letter spacing, alignment). Supports undo.
+fn set_text_style<H: Host>(host: &mut H, a: TextStyleArgs) -> Result<Value, String> {
+    let mut node = node(host, a.node_id)?.clone();
+    let mut applied: Vec<&str> = Vec::new();
+    let text = match &mut node.kind {
+        NodeKind::Text(props) => props,
+        _ => return Err("node is not a text node".into()),
+    };
+    if let Some(content) = a.text.as_deref() {
+        bounded_text("text", content, 100_000)?;
+        if text.content != content {
+            text.content = content.to_string();
+            text.runs.clear();
+            text.lists.clear();
+        }
+        applied.push("text");
+    }
+    if let Some(size) = a.font_size {
+        if !size.is_finite() || !(1.0..=1000.0).contains(&size) {
+            return Err("font_size must be within 1..=1000".into());
+        }
+        text.style.font_size = size;
+        applied.push("font_size");
+    }
+    if let Some(weight) = a.font_weight {
+        if !(100..=900).contains(&weight) || weight % 100 != 0 {
+            return Err("font_weight must be 100..=900 in steps of 100".into());
+        }
+        text.style.font_weight = weight;
+        applied.push("font_weight");
+    }
+    if let Some(family) = a.font_family.as_deref() {
+        if family.trim().is_empty() {
+            return Err("font_family must not be empty".into());
+        }
+        bounded_text("font_family", family, 256)?;
+        text.style.font_family = family.to_string();
+        applied.push("font_family");
+    }
+    if let Some(px) = a.line_height {
+        if !px.is_finite() || !(0.0..=1000.0).contains(&px) {
+            return Err("line_height must be within 0..=1000".into());
+        }
+        text.style.line_height = LineHeight::Pixels(px);
+        applied.push("line_height");
+    }
+    if let Some(px) = a.letter_spacing {
+        if !px.is_finite() || !(-100.0..=100.0).contains(&px) {
+            return Err("letter_spacing must be within -100..=100".into());
+        }
+        text.style.letter_spacing = px;
+        applied.push("letter_spacing");
+    }
+    if let Some(value) = a.align_h.as_deref() {
+        text.style.align_h = match value {
+            "left" => TextAlignH::Left,
+            "center" => TextAlignH::Center,
+            "right" => TextAlignH::Right,
+            "justified" => TextAlignH::Justified,
+            other => return Err(format!("align_h must be left|center|right|justified, got {other}")),
+        };
+        applied.push("align_h");
+    }
+    if let Some(value) = a.align_v.as_deref() {
+        text.style.align_v = match value {
+            "top" => TextAlignV::Top,
+            "center" => TextAlignV::Center,
+            "bottom" => TextAlignV::Bottom,
+            other => return Err(format!("align_v must be top|center|bottom, got {other}")),
+        };
+        applied.push("align_v");
+    }
+    commit(host, node, applied)
+}
+
+fn colour(spec: &str, field: &str) -> Result<Color, String> {
+    Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid {field} colour: {spec} (use #RGB, #RRGGBB, #RRGGBBAA or none)"))
+}
+
+fn stroke_weight(width: f32) -> Result<f32, String> {
+    if !width.is_finite() || !(0.0..=1000.0).contains(&width) {
+        return Err("stroke_width must be within 0..=1000".into());
+    }
+    Ok(width)
+}
+
+/// Pushes the edited node onto the undo stack and reports whether anything changed.
+fn commit<H: Host>(host: &mut H, node: Node, applied: Vec<&str>) -> Result<Value, String> {
+    let id = node.id.0;
+    let changed = host.doc().get(node.id) != Some(&node);
+    if changed {
+        host.exec(Command::Update { node: Box::new(node) })?;
+    }
+    Ok(json!({"node_id":id,"applied":applied,"changed":changed}))
+}
+
 pub fn summary(n: &Node) -> Value {
     json!({"node_id":n.id,"name":n.name,"kind":n.kind.default_name(),"parent_id":n.parent,
         "child_count":n.children.len(),"visible":n.visible,"x":n.transform.tx,"y":n.transform.ty,
@@ -435,6 +685,56 @@ struct CreateArgs {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MoveNodeArgs {
+    node_id: u64,
+    /// New container (frame, group, section or page root).
+    parent_id: u64,
+    /// Position among the new parent's children; appended when omitted.
+    index: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreatePageArgs {
+    name: String,
+    /// Page background; `#RRGGBB` (defaults to white).
+    background: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppearanceArgs {
+    node_id: u64,
+    /// `#RGB`, `#RRGGBB`, `#RRGGBBAA` or `none` to clear.
+    fill: Option<String>,
+    /// `#RGB`, `#RRGGBB`, `#RRGGBBAA` or `none` to clear.
+    stroke: Option<String>,
+    stroke_width: Option<f32>,
+    /// Sets all four corner radii.
+    corner_radius: Option<f32>,
+    opacity: Option<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextStyleArgs {
+    node_id: u64,
+    text: Option<String>,
+    font_size: Option<f32>,
+    /// CSS weight 100..=900, in steps of 100.
+    font_weight: Option<u16>,
+    font_family: Option<String>,
+    /// Line height in px.
+    line_height: Option<f32>,
+    letter_spacing: Option<f32>,
+    /// left | center | right | justified
+    align_h: Option<String>,
+    /// top | center | bottom
+    align_v: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UpdateArgs {
     node_id: u64,
     name: Option<String>,
@@ -445,6 +745,78 @@ struct UpdateArgs {
     height: Option<f32>,
     visible: Option<bool>,
     opacity: Option<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportSvgArgs {
+    pub parent_id: u64,
+    /// SVG markup (`<svg …`), at most 8 MiB.
+    pub svg: String,
+    /// Layer name for the imported frame; defaults to "svg".
+    pub name: Option<String>,
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
+}
+
+/// Imports SVG markup as a frame under `parent_id`, top-left at (x, y) in the
+/// parent's coordinates. One undoable `Command::Insert`; bitmap bytes carried
+/// by the SVG are merged into the document as content-addressed assets.
+pub fn import_svg<H: Host>(host: &mut H, a: ImportSvgArgs) -> Result<Value, String> {
+    if !node(host, a.parent_id)?.kind.is_container() {
+        return Err("parent_id must identify a container".into());
+    }
+    if a.svg.len() > 8 * 1024 * 1024 {
+        return Err("svg markup exceeds the 8 MiB limit".into());
+    }
+    if !desigma_svg::looks_like_svg(&a.svg) {
+        return Err("svg must be SVG markup starting with <svg or an XML prolog".into());
+    }
+    if !a.x.is_finite() || !a.y.is_finite() {
+        return Err("x and y must be finite numbers".into());
+    }
+    let name = match a.name.as_deref().map(str::trim) {
+        None | Some("") => "svg".to_string(),
+        Some(n) => n.to_string(),
+    };
+    bounded_text("name", &name, 1024)?;
+    let index = host.doc().get(NodeId(a.parent_id)).map_or(0, |n| n.children.len());
+    let mut exhausted = false;
+    let mut out = desigma_svg::svg_to_nodes_with(
+        &a.svg,
+        &name,
+        &mut || match host.alloc_id() {
+            Ok(id) => id,
+            Err(_) => {
+                exhausted = true;
+                NodeId(0)
+            }
+        },
+        &ImportOptions::default(),
+    )
+    .map_err(|e| format!("cannot import SVG: {e}"))?;
+    if exhausted {
+        return Err("Document has exhausted node IDs".into());
+    }
+    let count = out.nodes.len();
+    if count > 20_000 {
+        return Err(format!("svg produces {count} layers; the limit is 20000"));
+    }
+    let size = out.nodes.first().map(|n| n.size);
+    if let Some(root) = out.nodes.first_mut() {
+        root.transform = desigma_doc::Affine::translate(a.x, a.y);
+    }
+    let root_id = out.nodes.first().map(|n| n.id).ok_or("svg produced no layers")?;
+    let images = out.images.len();
+    host.exec(Command::Insert { parent: NodeId(a.parent_id), index, nodes: out.nodes })?;
+    // Only once the layers that use them are in: images sit outside undo, so bytes added
+    // before a failed insert would stay in the document for good.
+    host.doc_mut().images.append(&mut out.images);
+    Ok(json!({"node_id":root_id,"name":name,"nodes":count,
+        "width":size.map(|s| s.x),"height":size.map(|s| s.y),
+        "images":images,"changed":true}))
 }
 
 /// JSON tool descriptors kept beside the argument validators.
@@ -488,8 +860,41 @@ pub fn tools() -> Vec<Value> {
     );
     add("create_node","Create one layer in a container; defaults to x/y=0, width/height=100. Supports undo. Text is only valid for text layers. Changes are in memory until saved.",
         json!({"parent_id":id,"kind":{"type":"string","enum":["frame","rectangle","ellipse","text"]},"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size}),vec!["parent_id","kind"],false,false);
+    add("import_svg","Import SVG markup as one frame under parent_id, top-left at (x, y). Real child layers (paths, text, groups) are created rather than a flat bitmap; bitmap bytes inside the SVG become document assets. Supports undo as one step; changes remain in memory until saved.",json!({"parent_id":id,"svg":{"type":"string","maxLength":8388608,"description":"SVG markup; at most 8 MiB. Pass this or path."},"path":{"type":"string","description":"Workspace-relative .svg file to import instead of inline markup; the layer takes the file name unless name is given."},"name":name,"x":coordinate,"y":coordinate}),vec!["parent_id"],false,false);
     add("update_node","Update specified fields of one non-page layer. Coordinates are parent-relative. Replacing text clears text runs and list ranges. Supports undo; changes remain in memory until saved.",
         json!({"node_id":id,"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size,"visible":{"type":"boolean"},"opacity":{"type":"number","minimum":0,"maximum":1}}),vec!["node_id"],false,true);
+    add(
+        "move_node",
+        "Move one non-page layer under another container (frame, group, section or page), optionally at a given child index; appended when index is omitted. The layer keeps its parent-relative transform, so absolute position changes when the new parent is transformed. Refuses page roots, the layer's own subtree and non-container targets. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id,"parent_id":id,"index":{"type":"integer","minimum":0}}),
+        vec!["node_id","parent_id"],
+        false,
+        true,
+    );
+    add(
+        "create_page",
+        "Append an empty page (background defaults to white) and return its id, ready to receive layers. Pages are not nested under another node, so this is separate from create_node. Supports undo; changes remain in memory until saved.",
+        json!({"name":{"type":"string","minLength":1,"maxLength":1024},"background":{"type":"string","maxLength":9,"description":"#RGB, #RRGGBB or #RRGGBBAA; defaults to #ffffff."}}),
+        vec!["name"],
+        false,
+        false,
+    );
+    add(
+        "set_appearance",
+        "Restyle one non-page layer: fill, stroke, stroke width, corner radius, opacity. Colours accept #RGB, #RRGGBB, #RRGGBBAA or none. On text layers fill sets the text colour. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id,"fill":{"type":"string","maxLength":9},"stroke":{"type":"string","maxLength":9},"stroke_width":{"type":"number","minimum":0,"maximum":1000},"corner_radius":{"type":"number","minimum":0,"maximum":1000000},"opacity":{"type":"number","minimum":0,"maximum":1}}),
+        vec!["node_id"],
+        false,
+        true,
+    );
+    add(
+        "set_text_style",
+        "Set a text layer's content and typography: font size, CSS weight, family, line height in px, letter spacing, horizontal and vertical alignment. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id,"text":text,"font_size":{"type":"number","minimum":1,"maximum":1000},"font_weight":{"type":"integer","minimum":100,"maximum":900,"multipleOf":100},"font_family":{"type":"string","maxLength":256},"line_height":{"type":"number","minimum":0,"maximum":1000},"letter_spacing":{"type":"number","minimum":-100,"maximum":100},"align_h":{"type":"string","enum":["left","center","right","justified"]},"align_v":{"type":"string","enum":["top","center","bottom"]}}),
+        vec!["node_id"],
+        false,
+        true,
+    );
     add(
         "delete_node",
         "Remove a non-page layer and its entire subtree. Supports undo; changes remain in memory until saved.",
@@ -698,12 +1103,42 @@ mod tests {
             fn alloc_id(&mut self) -> Result<NodeId, String> {
                 self.e.alloc_id()
             }
+            fn doc_mut(&mut self) -> &mut Document {
+                &mut self.e.doc
+            }
         }
         let mut h = Counting { e: Engine::default(), execs: 0 };
         let id = call(&mut h, "desigma_create_node", json!({"parent_id":1,"kind":"frame","name":"A"})).unwrap()["node"]["id"].as_u64().unwrap();
         call(&mut h, "desigma_update_node", json!({"node_id":id,"x":10.0})).unwrap();
         assert_eq!(h.execs, 2);
         assert!(call(&mut h, "desigma_undo", json!({})).unwrap()["changed"].as_bool().unwrap());
+    }
+    #[test]
+    fn every_document_editing_tool_is_listed_in_edit_tools() {
+        // Writing tools that are not document edits: they are handled by the transport itself.
+        const OTHER: [&str; 4] = ["desigma_export_image", "desigma_export_animation", "desigma_select_nodes", "desigma_save_file"];
+        for t in tools() {
+            let name = t["name"].as_str().unwrap();
+            if t["annotations"]["readOnlyHint"] == false && !OTHER.contains(&name) {
+                assert!(EDIT_TOOLS.contains(&name), "{name} edits the document but is missing from EDIT_TOOLS");
+            }
+        }
+    }
+
+    #[test]
+    fn svg_import_into_a_leaf_is_refused_and_keeps_no_image_bytes() {
+        let mut e = Engine::default();
+        let rect = call(&mut e, "desigma_create_node", json!({"parent_id":1,"kind":"rectangle"})).unwrap()["node"]["id"].as_u64().unwrap();
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><image width=\"4\" height=\"4\" href=\"data:image/png;base64,{png}\"/></svg>"
+        );
+        let err = call(&mut e, "desigma_import_svg", json!({"parent_id":rect,"svg":svg})).unwrap_err();
+        assert!(err.contains("container"), "{err}");
+        assert!(e.doc.images.is_empty());
+        let ok = call(&mut e, "desigma_import_svg", json!({"parent_id":1,"svg":svg})).unwrap();
+        assert_eq!(ok["images"], 1);
+        assert_eq!(e.doc.images.len(), 1);
     }
 
     #[test]

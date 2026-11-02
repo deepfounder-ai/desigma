@@ -71,6 +71,7 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 
 | Tool | Purpose |
 | --- | --- |
+| `desigma_list_files` | Design files in this user's library, plus `shared/` copies of files opened from outside it while the agent bridge is on. Each `path` is valid for `desigma_open_file`. |
 | `desigma_open_file` | Import a native `.desigma`, `.fig`, `.pen` (Pencil), SVG, or supported JSON design into the session. |
 | `desigma_new_document` | Start an empty document with one page. |
 | `desigma_save_file` | Write the session to a native `.desigma` file: a new one, or an existing one with `overwrite: true`. |

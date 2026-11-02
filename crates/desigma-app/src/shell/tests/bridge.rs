@@ -106,11 +106,41 @@ fn bridge_refuses_mutations_while_a_gesture_runs() {
     s.frame(vec![Event::PointerButton { pos: p, button: PointerButton::Middle, pressed: true, modifiers: Modifiers::NONE }]);
     assert!(matches!(s.app().canvas.inter, crate::canvas::Interaction::Pan));
     let page = s.app().page.0;
-    let before = s.app().doc.nodes.len();
-    let (status, body) = with_frames(&mut s, move || call(port, &token, "desigma_create_node", json!({"parent_id":page,"kind":"frame"})));
-    assert_eq!(status, 422);
-    assert!(body["error"].as_str().unwrap().contains("busy"), "{body}");
-    assert_eq!(s.app().doc.nodes.len(), before);
+    let before = s.app().doc.to_json().unwrap();
+    // every editing tool, not only the first ones (#57): the gate runs before the arguments are read
+    for &name in desigma_mcp::engine::EDIT_TOOLS {
+        let token = token.clone();
+        let (status, body) = with_frames(&mut s, move || call(port, &token, name, json!({"parent_id":page,"kind":"frame"})));
+        assert_eq!(status, 422, "{name}: {body}");
+        assert!(body["error"].as_str().unwrap().contains("busy"), "{name}: {body}");
+    }
+    assert_eq!(s.app().doc.to_json().unwrap(), before);
+}
+
+/// Moving a layer out of a hug frame shrinks the frame again, as a drag on the canvas does (#58).
+#[test]
+fn bridge_move_lays_out_the_parent_it_left_and_the_one_it_joined() {
+    let mut s = Sim::new();
+    s.shell.app.replace_document(crate::demo::demo_document(), None);
+    let ctx = s.ctx.clone();
+    s.shell.app.start_bridge(&ctx).unwrap();
+    let (port, token) = {
+        let b = s.app().bridge.bridge.as_ref().unwrap();
+        (b.port(), b.token().to_string())
+    };
+    let card = s.app().doc.nodes.values().find(|n| n.name == "Card").unwrap().id;
+    let page = s.app().doc.get(card).unwrap().parent.unwrap().0;
+    let height = |s: &Sim| s.app().doc.get(card).unwrap().size.y;
+    let baseline = height(&s);
+    let t = token.clone();
+    let (status, body) =
+        with_frames(&mut s, move || call(port, &t, "desigma_create_node", json!({"parent_id":card.0,"kind":"rectangle","width":50,"height":30})));
+    assert_eq!(status, 200, "{body}");
+    let rect = body["result"]["node"]["id"].as_u64().unwrap();
+    assert!(height(&s) > baseline + 30.0, "the hug card grows around the new layer");
+    let (status, body) = with_frames(&mut s, move || call(port, &token, "desigma_move_node", json!({"node_id":rect,"parent_id":page})));
+    assert_eq!(status, 200, "{body}");
+    assert!((height(&s) - baseline).abs() < 0.5, "card shrinks back: {} vs {baseline}", height(&s));
 }
 
 #[test]

@@ -65,6 +65,7 @@ Name: "fileassoc"; Description: "Open .desigma files with {#AppName}"; GroupDesc
 
 [Files]
 Source: "{#BinDir}\desigma.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinDir}\desigma-mcp.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\desigma-diff.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE-APACHE"; DestDir: "{app}"; Flags: ignoreversion
