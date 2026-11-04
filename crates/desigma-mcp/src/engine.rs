@@ -71,6 +71,7 @@ impl Engine {
 /// editor bridge to refuse edits mid-gesture, so a new editing tool must be listed here.
 pub const EDIT_TOOLS: &[&str] = &[
     "desigma_create_node",
+    "desigma_apply_nodes",
     "desigma_create_page",
     "desigma_update_node",
     "desigma_move_node",
@@ -160,6 +161,7 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             Ok(json!({"node_id":id,"language":a.language,"code":code}))
         }
         "desigma_create_node" => create(host, parse(args)?),
+        "desigma_apply_nodes" => crate::apply_nodes::apply_nodes(host, args),
         "desigma_update_node" => update(host, parse(args)?),
         "desigma_delete_page" => {
             let a: NodeArgs = parse(args)?;
@@ -589,7 +591,7 @@ fn set_text_style<H: Host>(host: &mut H, a: TextStyleArgs) -> Result<Value, Stri
     commit(host, node, applied)
 }
 
-fn colour(spec: &str, field: &str) -> Result<Color, String> {
+pub(crate) fn colour(spec: &str, field: &str) -> Result<Color, String> {
     Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid {field} colour: {spec} (use #RGB, #RRGGBB, #RRGGBBAA or none)"))
 }
 
@@ -619,7 +621,7 @@ pub fn summary(n: &Node) -> Value {
 fn parse<T: DeserializeOwned>(args: Value) -> Result<T, String> {
     serde_json::from_value(args).map_err(|e| format!("invalid arguments: {e}"))
 }
-fn bounded_text(field: &str, value: &str, max: usize) -> Result<(), String> {
+pub(crate) fn bounded_text(field: &str, value: &str, max: usize) -> Result<(), String> {
     if value.len() > max {
         Err(format!("{field} exceeds {max} UTF-8 bytes"))
     } else {
@@ -864,6 +866,14 @@ pub fn tools() -> Vec<Value> {
     );
     add("create_node","Create one layer in a container; defaults to x/y=0, width/height=100. Supports undo. Text is only valid for text layers. Changes are in memory until saved.",
         json!({"parent_id":id,"kind":{"type":"string","enum":["frame","rectangle","ellipse","text"]},"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size}),vec!["parent_id","kind"],false,false);
+    add(
+        "apply_nodes",
+        "Create or update a whole node tree from JSON in ONE transaction and ONE undo step. Prefer this over many create_node/update_node/set_appearance calls: it covers gradients (linear, radial, angular, diamond), image fills, effects (drop/inner shadow, layer/background blur, glass), strokes, auto layout (direction, gap, padding, alignment, width/height hug|fill|px), clips_content, per-corner radius, rotation, blend modes, constraints and text styles. A node spec with node_id updates that node (only the passed fields change); with kind plus a parent it creates; children nest. Auto layout is solved before the result is stored. All problems come back per node (\"nodes[1].children[0] \\\"Button\\\": fill: ...\") and nothing is changed unless the whole tree is valid; validate_only checks without applying. Returns the new node IDs in spec order. Changes remain in memory until saved.",
+        crate::apply_nodes::schema(),
+        vec!["nodes"],
+        false,
+        false,
+    );
     add("import_svg","Import SVG markup as one frame under parent_id, top-left at (x, y). Real child layers (paths, text, groups) are created rather than a flat bitmap; bitmap bytes inside the SVG become document assets. Supports undo as one step; changes remain in memory until saved.",json!({"parent_id":id,"svg":{"type":"string","maxLength":8388608,"description":"SVG markup; at most 8 MiB. Pass this or path."},"path":{"type":"string","description":"Workspace-relative .svg file to import instead of inline markup; the layer takes the file name unless name is given."},"name":name,"x":coordinate,"y":coordinate}),vec!["parent_id"],false,false);
     add("update_node","Update specified fields of one non-page layer. Coordinates are parent-relative. Replacing text clears text runs and list ranges. Supports undo; changes remain in memory until saved.",
         json!({"node_id":id,"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size,"visible":{"type":"boolean"},"opacity":{"type":"number","minimum":0,"maximum":1}}),vec!["node_id"],false,true);

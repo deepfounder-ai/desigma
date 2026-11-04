@@ -10,9 +10,11 @@ server = ["dep:rmcp", "dep:tokio"]
 
 [dependencies]
 desigma-doc.workspace = true
+desigma-engine.workspace = true
 desigma-export.workspace = true
 desigma-svg.workspace = true
 desigma-library.workspace = true
+base64 = "0.22"
 serde.workspace = true
 serde_json.workspace = true
 rmcp = { version = "=3.5.1", default-features = false, features = ["server", "transport-io"], optional = true }

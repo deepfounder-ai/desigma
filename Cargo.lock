@@ -1528,7 +1528,9 @@ dependencies = [
 name = "desigma-mcp"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "desigma-doc",
+ "desigma-engine",
  "desigma-export",
  "desigma-library",
  "desigma-svg",
