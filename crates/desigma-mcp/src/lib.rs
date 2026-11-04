@@ -6,3 +6,4 @@ pub mod live;
 pub mod motion;
 #[cfg(feature = "server")]
 pub mod server;
+pub mod variables;

@@ -84,6 +84,8 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_create_component` | Turn a layer into a main component: frames, groups and sections in place, other layers wrapped in a component frame. Returns `component_id`; see [Components](#components). |
 | `desigma_create_instance` | Create an instance of a component under `parent_id` at `x`/`y`, with `overrides` for text, fill, visibility and swap. One undo step; returns `instance_id`. |
 | `desigma_override_instance` | Change layers inside an existing instance by layer name; stored as overrides so they survive component updates. |
+| `desigma_set_variables` | Create or update variable collections, modes and values by name (colour, number, string, boolean) in one undo step; repeatable. See [Variables](#variables). |
+| `desigma_bind_variable` | Bind a variable (by name) to a layer field such as `fill`, `stroke`, `gap`, `padding`, `radius`, `width`, `height`; `null` unbinds. |
 | `desigma_create_node` | Add a frame, rectangle, ellipse, or text layer to a container. |
 | `desigma_update_node` | Change name, position, dimensions, visibility, opacity, or plain text. |
 | `desigma_delete_node` | Remove a non-page layer and its descendants. |
@@ -136,6 +138,20 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 ```
 
 An override takes the same properties as a `desigma_apply_nodes` spec (`text`, `fill`, `stroke`, `visible`, `opacity`, `text_style`, ...) plus `swap` (a component id, for nested instances). Every change is recorded as an override, so syncing the component later does not undo it. In `desigma_apply_nodes` a spec may carry `"instance_of": <component id>` with the same `overrides` instead of `kind`/`children`, so a whole screen can mix plain layers and instances; the auto layout is solved around them. `desigma_override_instance {instance_id, overrides}` edits an instance that already exists; swaps run first as their own undo step. Updating a layer inside an instance with `desigma_apply_nodes {node_id}` records overrides in the same way.
+
+## Variables
+
+`desigma_set_variables` upserts by name, so an agent can state the tokens it needs and repeat the call safely:
+
+```json
+{"collections": [{"name": "Brand", "modes": ["Light", "Dark"], "variables": [
+  {"name": "Color/Primary", "type": "color", "values": {"Light": "#3366ff", "Dark": "#88aaff"}},
+  {"name": "Space/M", "type": "number", "value": 16}]}]}
+```
+
+`value` sets every mode, `values` sets modes by name. A new collection's first mode is named after `modes[0]`. A call with any problem changes nothing; a call that changes nothing returns `changed:false`. Opacity variables hold percent (0-100), as in Figma.
+
+Bind while building: a `desigma_apply_nodes` spec may carry `"bind": {"fill": "Color/Primary", "gap": "Space/M", "padding": "Space/M", "radius": "Radius/L"}`. Fields: `fill`, `stroke`, `stroke_width`, `gap`, `counter_gap`, `padding` (+ `_top/_right/_bottom/_left`), `radius`, `width`, `height`, `size`, `opacity`, `visible`, `text`, `font_size`, `font_weight`, `line_height`, `letter_spacing`. The value must match the variable's type and scopes; the variable's default-mode value is written into the layer so the layout sees it. `desigma_bind_variable {node_id, bindings}` does the same for an existing layer and `null` unbinds.
 
 ## Live editor control
 

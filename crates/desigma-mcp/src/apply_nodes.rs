@@ -74,6 +74,7 @@ struct Spec {
     instance_of: Option<u64>,
     overrides: Option<BTreeMap<String, Value>>,
     swap: Option<u64>,
+    bind: Option<BTreeMap<String, Option<String>>>,
 }
 
 #[derive(Deserialize)]
@@ -602,6 +603,11 @@ impl<'a> Planner<'a> {
         let doc_images = &self.doc.images;
         let images = &mut self.images;
         props(node, s, is_new, doc_images, images, &mut errs);
+        for (field, variable) in s.bind.iter().flatten() {
+            if let Err(e) = crate::variables::resolve_binding(self.doc, node, field, variable.as_deref()) {
+                errs.push(e);
+            }
+        }
         let name = node.name.clone();
         let ok = errs.is_empty();
         for e in errs {
@@ -1415,6 +1421,7 @@ pub fn schema() -> Value {
             "text_resize":{"type":"string","enum":["auto_width","auto_height","fixed","truncate"],"description":"Default: auto_width, or auto_height when a width is given."},
             "sides":{"type":"integer","minimum":3,"maximum":64,"description":"polygon and star."},
             "instance_of":{"type":"integer","minimum":1,"description":"Create an instance of this main component instead of a plain node (no kind/children). x, y, name, opacity and visible apply to the instance."},
+            "bind":{"type":"object","description":"Bind variables by name: {fill, stroke, stroke_width, gap, counter_gap, padding, radius, width, height, size, opacity, visible, text, font_size, font_weight, line_height, letter_spacing} -> variable name (or id), null to unbind. The variable's default-mode value is written into the node; create variables with desigma_set_variables. Gap and padding need auto_layout, fill and stroke need a fill or stroke in the same spec.","additionalProperties":{"type":["string","null"]}},
             "overrides":{"type":"object","description":"With instance_of: layer name inside the component -> {text, fill, stroke, visible, opacity, swap (component id), ...}.","additionalProperties":{"type":"object"}},
             "inner_ratio":{"type":"number","description":"star."},
             "children":{"type":"array","items":{"type":"object"},"description":"Child node specs, same shape, back to front."}

@@ -75,6 +75,8 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_create_component",
     "desigma_create_instance",
     "desigma_override_instance",
+    "desigma_set_variables",
+    "desigma_bind_variable",
     "desigma_create_page",
     "desigma_update_node",
     "desigma_move_node",
@@ -168,6 +170,8 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         "desigma_create_component" => crate::components::create_component(host, args),
         "desigma_create_instance" => crate::components::create_instance(host, args),
         "desigma_override_instance" => crate::components::override_instance(host, args),
+        "desigma_set_variables" => crate::variables::set_variables(host, args),
+        "desigma_bind_variable" => crate::variables::bind_variable(host, args),
         "desigma_update_node" => update(host, parse(args)?),
         "desigma_delete_page" => {
             let a: NodeArgs = parse(args)?;
@@ -886,6 +890,10 @@ pub fn tools() -> Vec<Value> {
         json!({"component_id":id,"parent_id":id,"x":coordinate,"y":coordinate,"name":name,"index":{"type":"integer","minimum":0},"overrides":{"type":"object","description":"Layer name -> {text, fill, stroke, visible, opacity, swap (component id), ...}.","additionalProperties":{"type":"object"}}}),vec!["component_id","parent_id"],false,false);
     add("override_instance","Change layers inside an existing instance by layer name: text, fill, stroke, visible, opacity or swap (component id, nested instances only). Each change is stored as an override, so it survives component updates. Swaps are applied first, as their own undo step; the other changes are one step.",
         json!({"instance_id":id,"overrides":{"type":"object","additionalProperties":{"type":"object"}}}),vec!["instance_id","overrides"],false,false);
+    add("set_variables","Create or update variable collections, modes and variables BY NAME in one undo step (existing ones are reused, so the call is repeatable). Example: {collections:[{name:\"Brand\",modes:[\"Light\",\"Dark\"],variables:[{name:\"Color/Primary\",type:\"color\",values:{Light:\"#3366ff\",Dark:\"#88aaff\"}},{name:\"Space/M\",type:\"number\",value:16}]}]}. type is color, number, string or boolean; value sets every mode, values sets modes by name. A new collection's first mode takes the first name in modes. Opacity variables hold percent (0-100). Returns the ids. Changes remain in memory until saved.",
+        json!({"collections":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"name":name,"modes":{"type":"array","items":{"type":"string"}},"variables":{"type":"array","items":{"type":"object","properties":{"name":name,"type":{"type":"string","enum":["color","number","string","boolean"]},"value":{},"values":{"type":"object"},"scopes":{"type":"array","items":{"type":"string"}},"description":{"type":"string"}},"required":["name","type"]}}},"required":["name"]}}}),vec!["collections"],false,true);
+    add("bind_variable","Bind variables to fields of one existing layer by variable name (or id); null unbinds. Fields: fill, stroke, stroke_width, gap, counter_gap, padding, radius, width, height, size, opacity, visible, text, font_size, font_weight, line_height, letter_spacing. The variable's default-mode value is written into the layer. To bind while building, use bind in desigma_apply_nodes specs instead. One undo step.",
+        json!({"node_id":id,"bindings":{"type":"object","additionalProperties":{"type":["string","null"]}}}),vec!["node_id","bindings"],false,true);
     add("import_svg","Import SVG markup as one frame under parent_id, top-left at (x, y). Real child layers (paths, text, groups) are created rather than a flat bitmap; bitmap bytes inside the SVG become document assets. Supports undo as one step; changes remain in memory until saved.",json!({"parent_id":id,"svg":{"type":"string","maxLength":8388608,"description":"SVG markup; at most 8 MiB. Pass this or path."},"path":{"type":"string","description":"Workspace-relative .svg file to import instead of inline markup; the layer takes the file name unless name is given."},"name":name,"x":coordinate,"y":coordinate}),vec!["parent_id"],false,false);
     add("update_node","Update specified fields of one non-page layer. Coordinates are parent-relative. Replacing text clears text runs and list ranges. Supports undo; changes remain in memory until saved.",
         json!({"node_id":id,"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size,"visible":{"type":"boolean"},"opacity":{"type":"number","minimum":0,"maximum":1}}),vec!["node_id"],false,true);
