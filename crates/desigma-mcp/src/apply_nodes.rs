@@ -19,6 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAX_SPECS: usize = 5000;
 const MAX_DEPTH: usize = 64;
 const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+/// New bitmap bytes one call may add in total.
+const MAX_TOTAL_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Plan-time ids for new nodes; swapped for real ids once the whole tree is valid.
 const TEMP_BASE: u64 = 1 << 62;
 
@@ -1353,7 +1355,12 @@ fn gradient_handles(kind: &str, angle: f32) -> [Vec2; 3] {
 
 fn store_image(b64: &str, images: &mut BTreeMap<String, Vec<u8>>) -> Result<String, String> {
     use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| format!("image_base64 is not valid base64: {e}"))?;
+    let b64 = b64.trim();
+    // Refuse before decoding: base64 carries 3 bytes in every 4 characters.
+    if b64.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err("image is larger than 16 MiB".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("image_base64 is not valid base64: {e}"))?;
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err("image is larger than 16 MiB".into());
     }
@@ -1366,6 +1373,12 @@ fn store_image(b64: &str, images: &mut BTreeMap<String, Vec<u8>>) -> Result<Stri
     }
     let hash = bytes.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3));
     let key = format!("img-{hash:016x}");
+    if !images.contains_key(&key) {
+        let total: usize = images.values().map(Vec::len).sum();
+        if total + bytes.len() > MAX_TOTAL_IMAGE_BYTES {
+            return Err(format!("this call adds more than {} MiB of new images; split it into several calls", MAX_TOTAL_IMAGE_BYTES >> 20));
+        }
+    }
     images.insert(key.clone(), bytes);
     Ok(key)
 }
@@ -1509,4 +1522,30 @@ pub fn schema() -> Value {
     json!({"parent_id":{"type":"integer","minimum":1,"description":"Container for new top-level nodes that name no parent_id themselves (a page or frame ID)."},
         "nodes":{"type":"array","minItems":1,"maxItems":1000,"items":node},
         "validate_only":{"type":"boolean","default":false,"description":"Check the whole tree and report problems without changing anything."}})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn oversized_base64_is_refused_before_decoding() {
+        let mut images = BTreeMap::new();
+        // Not valid base64 at all: only a length check can produce this error.
+        let huge = "!".repeat(MAX_IMAGE_BYTES.div_ceil(3) * 4 + 1);
+        let err = store_image(&huge, &mut images).unwrap_err();
+        assert!(err.contains("16 MiB"), "{err}");
+        assert!(store_image(PNG, &mut images).is_ok());
+    }
+
+    #[test]
+    fn new_images_per_call_are_capped() {
+        let mut images = BTreeMap::new();
+        images.insert("img-filler".to_string(), vec![0u8; MAX_TOTAL_IMAGE_BYTES - 10]);
+        let err = store_image(PNG, &mut images).unwrap_err();
+        assert!(err.contains("64 MiB"), "{err}");
+        assert_eq!(images.len(), 1);
+    }
 }
