@@ -508,6 +508,8 @@ impl<'a> Planner<'a> {
             out
         };
         // Swaps first: they rebuild the inside of the nested instance.
+        // A swapped layer may take the new component's name, so its id is kept per override key.
+        let mut swapped: BTreeMap<&str, NodeId> = BTreeMap::new();
         for (key, o) in &overrides {
             let Some(to) = o.swap else { continue };
             let opath = format!("{path}.overrides.{key}");
@@ -521,6 +523,8 @@ impl<'a> Planner<'a> {
                 self.err(&opath, &name, format!("swap: node {to} is not a main component"));
             } else if let Err(e) = swap_instance(scratch, target, NodeId(to)).apply(scratch) {
                 self.err(&opath, &name, format!("swap failed: {e}"));
+            } else {
+                swapped.insert(key, target);
             }
         }
         let mut ids = Vec::new();
@@ -550,7 +554,10 @@ impl<'a> Planner<'a> {
         nodes[0] = root_node;
         for (key, o) in &overrides {
             let opath = format!("{path}.overrides.{key}");
-            let found = nodes.iter().skip(1).position(|n| n.name == *key).map(|i| i + 1);
+            let found = match swapped.get(key.as_str()).and_then(|t| map.get(t)) {
+                Some(m) => nodes.iter().position(|n| n.id == *m),
+                None => nodes.iter().skip(1).position(|n| n.name == *key).map(|i| i + 1),
+            };
             let Some(i) = found else {
                 if o.swap.is_none() {
                     self.err(&opath, &name, crate::components::missing_layer_in(&nodes, key));
@@ -558,9 +565,6 @@ impl<'a> Planner<'a> {
                 }
                 continue;
             };
-            if o.swap.is_some() && o.text.is_none() && o.fill.is_none() {
-                continue;
-            }
             let orig = nodes[i].clone();
             let mut node = orig.clone();
             ok &= self.props(&opath, &mut node, o, false);

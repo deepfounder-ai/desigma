@@ -185,3 +185,43 @@ fn override_instance_rejects_a_non_number_swap() {
         assert!(err.contains("swap must be"), "{err}");
     }
 }
+
+#[test]
+fn swap_together_with_other_props_applies_them() {
+    let mut e = Engine::default();
+    let p = page(&mut e);
+    let b = button(&mut e, p);
+    e.call("desigma_create_component", json!({"node_id":b})).unwrap();
+    let dot = e.call("desigma_apply_nodes", json!({"parent_id":p,"nodes":[{"kind":"ellipse","name":"Dot","width":16,"height":16}]})).unwrap()["nodes"][0]
+        ["node_id"]
+        .as_u64()
+        .unwrap();
+    let comp = e.call("desigma_create_component", json!({"node_id":dot})).unwrap()["component_id"].as_u64().unwrap();
+    let card = e
+        .call(
+            "desigma_apply_nodes",
+            json!({"parent_id":p,"nodes":[{"kind":"frame","name":"Card","width":200,"height":80,"children":[{"instance_of":b,"name":"Action"}]}]}),
+        )
+        .unwrap()["nodes"][0]["node_id"]
+        .as_u64()
+        .unwrap();
+    e.call("desigma_create_component", json!({"node_id":card})).unwrap();
+    let r = e
+        .call(
+            "desigma_create_instance",
+            json!({"component_id":card,"parent_id":p,
+                "overrides":{"Action":{"swap":comp,"opacity":0.5,"visible":false,"stroke":{"color":"#ff0000","width":3}}}}),
+        )
+        .unwrap();
+    validate_document(&e.doc).unwrap();
+    let inst = e.doc.get(NodeId(r["instance_id"].as_u64().unwrap())).unwrap();
+    let action = e.doc.get(inst.children[0]).unwrap();
+    assert!(matches!(action.kind, NodeKind::Instance { component: Some(c), .. } if c == NodeId(comp)));
+    assert_eq!(action.opacity, 0.5);
+    assert!(!action.visible);
+    assert_eq!(action.stroke.weight, 3.0);
+    assert!(!action.stroke.paints.is_empty());
+    // A prop that cannot apply is an error, not a silent drop.
+    let err = e.call("desigma_create_instance", json!({"component_id":card,"parent_id":p,"overrides":{"Action":{"swap":comp,"opacity":9}}})).unwrap_err();
+    assert!(err.contains("opacity"), "{err}");
+}
