@@ -13,6 +13,15 @@ for writing about, linking to or promoting desigma.
 | [`png/story-1080x1920.png`](png/story-1080x1920.png) | 1080×1920 | Instagram/LinkedIn stories, TikTok/Shorts covers |
 | [`png/carousel-board-mode-1080x1350.png`](png/carousel-board-mode-1080x1350.png) | 1080×1350 | Carousel slide: Board mode |
 | [`png/carousel-variables-1080x1350.png`](png/carousel-variables-1080x1350.png) | 1080×1350 | Carousel slide: Variables |
+| [`png/stars-1000-linkedin-1200x627.png`](png/stars-1000-linkedin-1200x627.png) | 1200×627 | 1,000 stars: LinkedIn link image |
+| [`png/stars-1000-linkedin-square-1080x1080.png`](png/stars-1000-linkedin-square-1080x1080.png) | 1080×1080 | 1,000 stars: LinkedIn square |
+| [`png/stars-1000-linkedin-portrait-1080x1350.png`](png/stars-1000-linkedin-portrait-1080x1350.png) | 1080×1350 | 1,000 stars: LinkedIn portrait |
+| [`png/stars-1000-linkedin-cover-1584x396.png`](png/stars-1000-linkedin-cover-1584x396.png) | 1584×396 | 1,000 stars: LinkedIn page cover |
+| [`png/stars-1000-threads-1-star-1080x1350.png`](png/stars-1000-threads-1-star-1080x1350.png) | 1080×1350 | 1,000 stars: Threads carousel 1/3 |
+| [`png/stars-1000-threads-2-thanks-1080x1350.png`](png/stars-1000-threads-2-thanks-1080x1350.png) | 1080×1350 | 1,000 stars: Threads carousel 2/3 |
+| [`png/stars-1000-threads-3-shipped-1080x1350.png`](png/stars-1000-threads-3-shipped-1080x1350.png) | 1080×1350 | 1,000 stars: Threads carousel 3/3 |
+| [`png/stars-1000-threads-stickies-1080x1350.png`](png/stars-1000-threads-stickies-1080x1350.png) | 1080×1350 | 1,000 stars: Threads single (stickies) |
+| [`png/stars-1000-threads-terminal-1080x1350.png`](png/stars-1000-threads-terminal-1080x1350.png) | 1080×1350 | 1,000 stars: Threads single (terminal) |
 
 Product screenshots for articles are in [`../docs/images/`](../docs/images/), all
 captured from the real app with its `--screenshot` mode.
