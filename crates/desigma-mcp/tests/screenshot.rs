@@ -19,5 +19,11 @@ fn screenshot_writes_a_png_under_the_workspace_by_default() {
     assert_ne!(again["path"], shot["path"], "names rotate");
     assert!(s.call("desigma_screenshot", json!({"node_id":id,"scale":9})).is_err());
     assert!(s.call("desigma_screenshot", json!({"node_id":id,"path":"../out.png"})).is_err());
+    // The default names rotate through 50 files in total, whatever node is shown.
+    for _ in 0..120 {
+        s.call("desigma_screenshot", json!({"node_id":id})).unwrap();
+    }
+    let n = std::fs::read_dir(dir.join(".desigma-screenshots")).unwrap().count();
+    assert_eq!(n, 50, "never more than 50 default screenshots");
     std::fs::remove_dir_all(&dir).ok();
 }

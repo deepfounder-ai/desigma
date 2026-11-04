@@ -23,7 +23,7 @@ pub struct Session {
     mode: Option<Mode>,
     /// The `.desigma` file this session was opened from or last saved to, if any.
     path: Option<PathBuf>,
-    /// Counts screenshots so file names rotate instead of piling up.
+    /// Counts default-path screenshots across all nodes; names `shot-{n}.png` wrap at `SHOT_NAMES`.
     shots: u32,
 }
 
@@ -58,6 +58,8 @@ struct NewArgs {
 }
 
 const SHOT_DIR: &str = ".desigma-screenshots";
+/// Default screenshot names in rotation, so the folder never holds more than this many files.
+const SHOT_NAMES: u32 = 50;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -211,7 +213,7 @@ impl Session {
     }
 
     /// `desigma_screenshot`: `export_image` with a default path in `.desigma-screenshots/` of the
-    /// workspace (50 rotating names), so an agent can look at every edit without choosing files.
+    /// workspace (`shot-{n}.png`, 50 names in total, oldest overwritten), so an agent can look at every edit without choosing files.
     fn screenshot(&mut self, args: Value) -> Result<Value, String> {
         let a: ShotArgs = parse(args)?;
         let path = match a.path {
@@ -224,8 +226,8 @@ impl Session {
                     }
                 }
                 fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {SHOT_DIR}: {e}"))?;
-                self.shots = (self.shots + 1) % 50;
-                format!("{SHOT_DIR}/node-{}-{}.png", a.node_id, self.shots)
+                self.shots = (self.shots + 1) % SHOT_NAMES;
+                format!("{SHOT_DIR}/shot-{}.png", self.shots)
             }
         };
         let mut r = self.call("desigma_export_image", json!({"node_id":a.node_id,"scale":a.scale,"path":path}))?;
