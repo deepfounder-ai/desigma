@@ -231,6 +231,10 @@ impl History {
         self.undo.push(c.apply(doc)?);
         Ok(true)
     }
+    /// Forgets the redo stack, for callers that undo a step only to take it back for good.
+    pub fn clear_redo(&mut self) {
+        self.redo.clear();
+    }
     /// Calls `f` on every stored command (undo and redo stacks, Batch contents included).
     /// For rewriting stored inverses when the document changes underneath them.
     pub fn for_each_command_mut(&mut self, mut f: impl FnMut(&mut Command)) {

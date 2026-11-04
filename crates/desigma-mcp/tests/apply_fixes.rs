@@ -1,5 +1,6 @@
-use desigma_doc::NodeId;
-use desigma_mcp::engine::{validate_document, Engine};
+use desigma_doc::{Command, Document, NodeId};
+use desigma_mcp::apply_nodes::apply_nodes;
+use desigma_mcp::engine::{validate_document, Engine, Host};
 use serde_json::json;
 
 fn page(e: &mut Engine) -> u64 {
@@ -91,4 +92,53 @@ fn parent_removed_by_replace_children_is_a_per_node_error() {
     assert!(err.contains("nodes[1]") && err.contains("replace_children"), "{err}");
     assert_eq!(e.doc.nodes, before);
     assert!(e.doc.get(NodeId(b)).is_some());
+}
+
+/// An engine whose edits leave the document invalid, to reach the validation rollback.
+struct Corrupting(Engine);
+impl Host for Corrupting {
+    fn doc(&self) -> &Document {
+        self.0.doc()
+    }
+    fn exec(&mut self, cmd: Command) -> Result<(), String> {
+        self.0.exec(cmd)?;
+        let page = self.0.doc.pages[0];
+        if let Some(last) = self.0.doc.get(page).and_then(|p| p.children.last().copied()) {
+            self.0.doc.pages.push(last);
+        }
+        Ok(())
+    }
+    fn undo(&mut self) -> Result<bool, String> {
+        let r = self.0.undo();
+        self.0.doc.pages.truncate(1);
+        r
+    }
+    fn redo(&mut self) -> Result<bool, String> {
+        self.0.redo()
+    }
+    fn discard_redo(&mut self) {
+        self.0.discard_redo()
+    }
+    fn can_undo(&self) -> bool {
+        self.0.can_undo()
+    }
+    fn can_redo(&self) -> bool {
+        self.0.can_redo()
+    }
+    fn alloc_id(&mut self) -> Result<NodeId, String> {
+        self.0.alloc_id()
+    }
+    fn doc_mut(&mut self) -> &mut Document {
+        self.0.doc_mut()
+    }
+}
+
+#[test]
+fn validation_rollback_leaves_nothing_to_redo() {
+    let mut h = Corrupting(Engine::default());
+    let p = page(&mut h.0);
+    let err = apply_nodes(&mut h, json!({"parent_id":p,"nodes":[{"kind":"rectangle","width":5,"height":5}]})).unwrap_err();
+    assert!(err.contains("rolled back"), "{err}");
+    assert!(!h.can_redo(), "a rolled back step must not be redoable");
+    assert!(!h.0.doc.nodes.values().any(|n| n.kind.default_name() == "Rectangle"));
 }

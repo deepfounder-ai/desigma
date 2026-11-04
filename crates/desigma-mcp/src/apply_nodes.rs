@@ -287,6 +287,8 @@ pub fn apply_nodes<H: Host>(host: &mut H, args: Value) -> Result<Value, String> 
     if let Err(e) = validate_document(host.doc()) {
         // The plan was clean but the result is not: take it back out.
         host.undo()?;
+        // Not a step anyone chose: redo must not bring it back.
+        host.discard_redo();
         return Err(format!("the result failed document validation and was rolled back: {e}"));
     }
     // Bitmap bytes sit outside undo; add them only once the layers using them are in.

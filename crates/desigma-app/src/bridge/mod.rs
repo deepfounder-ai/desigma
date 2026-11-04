@@ -64,6 +64,9 @@ impl Host for AppHost<'_> {
     fn redo(&mut self) -> Result<bool, String> {
         Ok(self.0.redo())
     }
+    fn discard_redo(&mut self) {
+        self.0.hist.clear_redo();
+    }
     fn can_undo(&self) -> bool {
         self.0.hist.can_undo()
     }

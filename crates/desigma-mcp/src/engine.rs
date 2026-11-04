@@ -23,6 +23,8 @@ pub trait Host {
     fn exec(&mut self, cmd: Command) -> Result<(), String>;
     fn undo(&mut self) -> Result<bool, String>;
     fn redo(&mut self) -> Result<bool, String>;
+    /// Drops the redo stack. Used after an `undo` that takes a failed edit back for good.
+    fn discard_redo(&mut self);
     fn can_undo(&self) -> bool;
     fn can_redo(&self) -> bool;
     /// Allocates a fresh node id on the document.
@@ -46,6 +48,9 @@ impl Host for Engine {
     }
     fn redo(&mut self) -> Result<bool, String> {
         self.history.redo(&mut self.doc).map_err(|e| e.to_string())
+    }
+    fn discard_redo(&mut self) {
+        self.history.clear_redo();
     }
     fn can_undo(&self) -> bool {
         self.history.can_undo()
@@ -1133,6 +1138,9 @@ mod tests {
             }
             fn redo(&mut self) -> Result<bool, String> {
                 self.e.redo()
+            }
+            fn discard_redo(&mut self) {
+                self.e.discard_redo()
             }
             fn can_undo(&self) -> bool {
                 self.e.can_undo()
