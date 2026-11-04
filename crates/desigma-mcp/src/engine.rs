@@ -166,6 +166,8 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             Ok(json!({"node_id":id,"language":a.language,"code":code}))
         }
         "desigma_create_node" => create(host, parse(args)?),
+        "desigma_get_tree" => crate::context::get_tree(host, args),
+        "desigma_get_assets" => crate::context::get_assets(host, args),
         "desigma_apply_nodes" => crate::apply_nodes::apply_nodes(host, args),
         "desigma_create_component" => crate::components::create_component(host, args),
         "desigma_create_instance" => crate::components::create_instance(host, args),
@@ -874,6 +876,10 @@ pub fn tools() -> Vec<Value> {
         true,
         true,
     );
+    add("get_tree","Compact layer tree: below node_id (or every page when omitted), depth levels deep (default 3, max 16). Each layer has id, name, kind, x/y/w/h (parent space), a short paint summary (fill, stroke, text), instance_of, layout, bound variables and children; deeper layers show child_count. Cheaper than get_node for orientation, and the way to check what apply_nodes built.",
+        json!({"node_id":id,"depth":{"type":"integer","minimum":0,"maximum":16,"default":3},"limit":{"type":"integer","minimum":1,"maximum":2000,"default":2000}}),vec![],true,true);
+    add("get_assets","Everything reusable in one list: components (id, name, size, top layer names, instance count), styles, variable collections with modes, and variables with their value per mode name. Read this before building so screens use components and variables instead of loose values. query filters by name.",
+        json!({"query":{"type":"string","maxLength":1024}}),vec![],true,true);
     add("create_node","Create one layer in a container; defaults to x/y=0, width/height=100. Supports undo. Text is only valid for text layers. Changes are in memory until saved.",
         json!({"parent_id":id,"kind":{"type":"string","enum":["frame","rectangle","ellipse","text"]},"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size}),vec!["parent_id","kind"],false,false);
     add(

@@ -76,6 +76,8 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_new_document` | Start an empty document with one page. |
 | `desigma_save_file` | Write the session to a native `.desigma` file: a new one, or an existing one with `overwrite: true`. |
 | `desigma_get_document` | Read document name, pages, counts, undo/redo availability, and `session` (`"file"` or `"editor"`). |
+| `desigma_get_tree` | Compact layer tree below `node_id` (or all pages), `depth` levels (default 3): id, name, kind, x/y/w/h, a paint summary (`fill`, `stroke`, `text`), `instance_of`, `layout`, bound variables, children; deeper layers show `child_count`. |
+| `desigma_get_assets` | Components, styles, variable collections and variables (value per mode name) in one list; `query` filters by name. Read it before building. |
 | `desigma_list_nodes` | Search names case-insensitively or list direct children; paginate using `next_offset`. |
 | `desigma_get_node` | Read a complete native node, including child IDs, paints, geometry, text, and bindings. |
 | `desigma_get_variables` | Read collections and tokens; optionally resolve one node's direct bindings in its inherited modes. |
