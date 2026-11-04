@@ -23,6 +23,8 @@ pub struct Session {
     mode: Option<Mode>,
     /// The `.desigma` file this session was opened from or last saved to, if any.
     path: Option<PathBuf>,
+    /// Counts screenshots so file names rotate instead of piling up.
+    shots: u32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -55,6 +57,20 @@ struct NewArgs {
     discard_changes: bool,
 }
 
+const SHOT_DIR: &str = ".desigma-screenshots";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShotArgs {
+    node_id: u64,
+    #[serde(default = "one")]
+    scale: f32,
+    path: Option<String>,
+}
+fn one() -> f32 {
+    1.0
+}
+
 fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
     serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))
 }
@@ -72,7 +88,7 @@ impl Session {
         if !root.is_dir() {
             return Err("Workspace must be a directory".into());
         }
-        Ok(Self { engine: Engine::default(), root, dirty: false, discovery, mode: None, path: None })
+        Ok(Self { engine: Engine::default(), root, dirty: false, discovery, mode: None, path: None, shots: 0 })
     }
 
     fn input_path(&self, path: &str) -> Result<PathBuf, String> {
@@ -194,6 +210,30 @@ impl Session {
         Ok(json!({"files": files, "truncated": truncated}))
     }
 
+    /// `desigma_screenshot`: `export_image` with a default path in `.desigma-screenshots/` of the
+    /// workspace (50 rotating names), so an agent can look at every edit without choosing files.
+    fn screenshot(&mut self, args: Value) -> Result<Value, String> {
+        let a: ShotArgs = parse(args)?;
+        let path = match a.path {
+            Some(p) => p,
+            None => {
+                let dir = self.root.join(SHOT_DIR);
+                if let Ok(meta) = fs::symlink_metadata(&dir) {
+                    if meta.file_type().is_symlink() || !meta.is_dir() {
+                        return Err(format!("{SHOT_DIR} in the workspace must be a plain directory"));
+                    }
+                }
+                fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {SHOT_DIR}: {e}"))?;
+                self.shots = (self.shots + 1) % 50;
+                format!("{SHOT_DIR}/node-{}-{}.png", a.node_id, self.shots)
+            }
+        };
+        let mut r = self.call("desigma_export_image", json!({"node_id":a.node_id,"scale":a.scale,"path":path}))?;
+        r["node_id"] = json!(a.node_id);
+        r["scale"] = json!(a.scale);
+        Ok(r)
+    }
+
     fn stays_inside(&self, path: &Path) -> bool {
         path.canonicalize().is_ok_and(|p| p.starts_with(&self.root))
     }
@@ -206,6 +246,9 @@ impl Session {
         }
         if name == "desigma_import_svg" {
             args = self.inline_svg(args)?;
+        }
+        if name == "desigma_screenshot" {
+            return self.screenshot(args);
         }
         match (self.mode, self.discovery.as_deref().and_then(crate::live::probe_at)) {
             (Some(Mode::Editor), None) => {
@@ -348,6 +391,7 @@ pub fn tools() -> Vec<Tool> {
         raw.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":name != "desigma_save_file","idempotentHint":false,"openWorldHint":false}}));
     }
     let id = json!({"type":"integer","minimum":1,"description":"Desigma numeric node ID; obtain from list_nodes/get_document."});
+    raw.push(json!({"name":"desigma_screenshot","description":"Render one layer to a PNG so you can look at it after an edit. Like desigma_export_image, but the file goes to .desigma-screenshots/ in the workspace unless you pass path; returns {path,width,height,scale,node_id}. Open the PNG with your image viewer to verify, then fix and repeat. scale 0.25-4, default 1.","inputSchema":{"type":"object","properties":{"node_id":id,"scale":{"type":"number","minimum":0.25,"maximum":4,"default":1},"path":{"type":"string","description":"Optional workspace-relative .png path."}},"required":["node_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
     raw.push(json!({"name":"desigma_list_files","description":"Design files this user can open. Each entry's path is inside the workspace and is valid for desigma_open_file. Library files are the Desigma library. shared/ is a copy of a file opened from outside the library, and only while the agent bridge is on.","inputSchema":{"type":"object","properties":{},"required":[],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
     raw.push(json!({"name":"desigma_get_selection","description":"Layers currently selected in the running editor. Requires the editor's agent bridge; errors in a file session.","inputSchema":{"type":"object","properties":{},"required":[],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
     raw.push(json!({"name":"desigma_select_nodes","description":"Select layers in the running editor and scroll/zoom to them (reveal=true). Requires the agent bridge.","inputSchema":{"type":"object","properties":{"node_ids":{"type":"array","items":id,"minItems":1,"maxItems":500},"reveal":{"type":"boolean","default":true}},"required":["node_ids"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));

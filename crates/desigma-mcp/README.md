@@ -93,6 +93,7 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_delete_node` | Remove a non-page layer and its descendants. |
 | `desigma_undo` / `desigma_redo` | Traverse the edit history. In the editor it is the user's own undo stack, so `desigma_undo` may undo the user's latest edit. |
 | `desigma_export_image` | Render a node to a PNG at `scale` (0.25–4, default 1) and write it to `path` inside the workspace, overwriting if present; returns `{path,width,height}`. Works in both session types. |
+| `desigma_screenshot` | Render a node to PNG at `scale` (0.25-4) without choosing a file: the PNG goes to `.desigma-screenshots/` in the workspace (50 rotating names) unless `path` is given; returns `{path,width,height,scale,node_id}`. Use it after every edit to check the result. Works in both session types. |
 | `desigma_get_selection` | Read the editor's current selection. Editor only; fails in a file session. |
 | `desigma_select_nodes` | Select 1–500 `node_ids` on one page in the editor (switching to that page) and, with `reveal` (default `true`), scroll/zoom to them. Editor only; fails in a file session. |
 
