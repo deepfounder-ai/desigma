@@ -181,7 +181,16 @@ impl Command {
             Command::Batch(cmds) => {
                 let mut inv = Vec::with_capacity(cmds.len());
                 for c in cmds {
-                    inv.push(c.apply(doc)?);
+                    match c.apply(doc) {
+                        Ok(i) => inv.push(i),
+                        Err(e) => {
+                            // All or nothing: take back what already went in, newest first.
+                            for i in inv.into_iter().rev() {
+                                let _ = i.apply(doc);
+                            }
+                            return Err(e);
+                        }
+                    }
                 }
                 inv.reverse();
                 Command::Batch(inv)
@@ -275,6 +284,23 @@ mod tests {
         assert_eq!(d.get(page).unwrap().children, vec![id]);
         h.redo(&mut d).unwrap();
         assert!(d.get(id).is_none());
+    }
+
+    #[test]
+    fn failed_batch_rolls_back_and_records_nothing() {
+        let mut d = Document::new("t");
+        let page = d.add_page("P");
+        let id = d.alloc_id();
+        d.insert(page, Node::rectangle(id, Rect::new(0.0, 0.0, 10.0, 10.0))).unwrap();
+        let before = d.clone();
+        let mut renamed = d.get(id).unwrap().clone();
+        renamed.name = "Renamed".into();
+        let mut h = History::default();
+        let batch = Command::Batch(vec![Command::Update { node: Box::new(renamed) }, Command::Remove { id }, Command::Remove { id: NodeId(9999) }]);
+        assert!(h.exec(&mut d, batch).is_err());
+        assert_eq!(d.nodes, before.nodes);
+        assert_eq!(d.get(page).unwrap().children, vec![id]);
+        assert!(!h.can_undo() && !h.can_redo());
     }
 
     #[test]

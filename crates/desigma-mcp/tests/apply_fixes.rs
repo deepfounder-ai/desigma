@@ -67,3 +67,28 @@ fn replace_children_removes_reorders_and_adds_in_one_step() {
     let none = e.call("desigma_apply_nodes", json!({"nodes":[{"node_id":list,"replace_children":true,"children":[]}]})).unwrap();
     assert_eq!(none["removed"], 3);
 }
+
+#[test]
+fn parent_removed_by_replace_children_is_a_per_node_error() {
+    let mut e = Engine::default();
+    let p = page(&mut e);
+    let r = e
+        .call(
+            "desigma_apply_nodes",
+            json!({"parent_id":p,"nodes":[{"kind":"frame","name":"A","width":100,"height":100,"children":[{"kind":"frame","name":"B","width":10,"height":10}]}]}),
+        )
+        .unwrap();
+    let (a, b) = (id(&r, 0), id(&r, 1));
+    let before = e.doc.nodes.clone();
+    let err = e
+        .call(
+            "desigma_apply_nodes",
+            json!({"nodes":[
+                {"node_id":a,"replace_children":true,"children":[]},
+                {"kind":"rectangle","parent_id":b,"width":5,"height":5}]}),
+        )
+        .unwrap_err();
+    assert!(err.contains("nodes[1]") && err.contains("replace_children"), "{err}");
+    assert_eq!(e.doc.nodes, before);
+    assert!(e.doc.get(NodeId(b)).is_some());
+}

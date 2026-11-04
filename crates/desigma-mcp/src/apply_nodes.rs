@@ -211,6 +211,9 @@ struct Planner<'a> {
     removals: Vec<NodeId>,
     /// Final child order per container updated with `replace_children`.
     reorders: Vec<(NodeId, Vec<NodeId>)>,
+    /// Existing nodes that top-level specs point at (insert parent or update target), with the
+    /// spec path, so a node removed by `replace_children` anywhere in the call is refused.
+    top_refs: Vec<(String, NodeId)>,
 }
 
 /// Entry point for the `desigma_apply_nodes` tool.
@@ -231,10 +234,12 @@ pub fn apply_nodes<H: Host>(host: &mut H, args: Value) -> Result<Value, String> 
         scratch: None,
         removals: Vec::new(),
         reorders: Vec::new(),
+        top_refs: Vec::new(),
     };
     for (i, v) in a.nodes.iter().enumerate() {
         p.top_level(format!("nodes[{i}]"), v, a.parent_id);
     }
+    p.check_removed_refs();
     if !p.errors.is_empty() {
         return Err(format_errors(&p.errors));
     }
@@ -316,8 +321,29 @@ impl<'a> Planner<'a> {
         self.errors.push(NodeError { path: path.into(), name: name.into(), message: message.into() });
     }
 
+    /// A spec that targets a node (or a parent) that `replace_children` deletes in this call
+    /// would fail at apply time; say so per node instead.
+    fn check_removed_refs(&mut self) {
+        if self.removals.is_empty() {
+            return;
+        }
+        for (path, id) in std::mem::take(&mut self.top_refs) {
+            let mut cur = Some(id);
+            while let Some(c) = cur {
+                if self.removals.contains(&c) {
+                    self.err(&path, "", format!("node {} is removed by replace_children in this call, so it cannot be used here", id.0));
+                    break;
+                }
+                cur = self.doc.get(c).and_then(|n| n.parent);
+            }
+        }
+    }
+
     fn top_level(&mut self, path: String, v: &Value, default_parent: Option<u64>) {
         let Some(spec) = self.parse_spec(&path, v) else { return };
+        if let Some(id) = spec.node_id.or(spec.parent_id).or(default_parent) {
+            self.top_refs.push((path.clone(), NodeId(id)));
+        }
         match (spec.node_id, spec.parent_id.or(default_parent)) {
             (Some(_), _) if spec.parent_id.is_some() => self.err(&path, "", "node_id and parent_id cannot be combined; use desigma_move_node to reparent"),
             (Some(id), _) => self.update(&path, spec, NodeId(id), 0),
