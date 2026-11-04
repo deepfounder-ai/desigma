@@ -80,6 +80,7 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_get_node` | Read a complete native node, including child IDs, paints, geometry, text, and bindings. |
 | `desigma_get_variables` | Read collections and tokens; optionally resolve one node's direct bindings in its inherited modes. |
 | `desigma_generate_code` | Return CSS, Tailwind, React, SwiftUI, Compose, or SVG source without writing a file. |
+| `desigma_apply_nodes` | Create or update a whole node tree from JSON in one transaction and one undo step; see [Building whole screens](#building-whole-screens). |
 | `desigma_create_node` | Add a frame, rectangle, ellipse, or text layer to a container. |
 | `desigma_update_node` | Change name, position, dimensions, visibility, opacity, or plain text. |
 | `desigma_delete_node` | Remove a non-page layer and its descendants. |
@@ -89,6 +90,36 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_select_nodes` | Select 1–500 `node_ids` on one page in the editor (switching to that page) and, with `reveal` (default `true`), scroll/zoom to them. Editor only; fails in a file session. |
 
 `desigma_list_nodes` defaults to 100 results and accepts 1–500 per call. `parent_id` filters direct children, not all descendants. Coordinates are relative to the parent. Width and height must be non-negative, geometry must be finite and within ±1,000,000, and opacity must be between 0 and 1. Replacing text clears rich-text runs and list ranges. Page roots cannot be edited or deleted by the layer tools.
+
+## Building whole screens
+
+`desigma_apply_nodes` builds or edits a complete tree in one call. Use it instead of chains of `create_node`, `update_node` and `set_appearance`: the whole call is one transaction, one undo step, and it is checked with `validate_document` before it is kept.
+
+```json
+{"parent_id": 1, "nodes": [{
+  "kind": "frame", "name": "Card", "x": 40, "y": 60, "width": 320, "height": "hug",
+  "clips_content": true, "corner_radius": [24, 24, 8, 8],
+  "fill": {"type": "linear", "angle": 180, "stops": [{"pos": 0, "color": "#ff3366"}, {"pos": 1, "color": "#3366ffcc"}]},
+  "effects": [{"type": "drop_shadow", "y": 8, "blur": 24}, {"type": "background_blur", "blur": 20}],
+  "auto_layout": {"direction": "vertical", "gap": 12, "padding": [16, 20]},
+  "children": [
+    {"kind": "text", "name": "Title", "text": "Hello", "width": "fill",
+     "text_style": {"font_size": 24, "font_weight": 700, "line_height": "120%", "color": "#111111"}},
+    {"kind": "rectangle", "name": "Bar", "width": "fill", "height": 40, "rotation": 15, "blend": "multiply"}
+  ]
+}]}
+```
+
+- **Create or update.** A spec with `kind` and a parent (`parent_id` on the call or on the spec) creates a node. A spec with `node_id` updates that node and changes only the fields you pass. Under an updated node, a child with `node_id` is updated and a child without one is created and appended. `kind` cannot be changed, and `node_id` cannot be combined with `parent_id` (use `desigma_move_node`).
+- **Kinds.** `frame`, `group`, `rectangle`, `ellipse`, `text`, `line`, `polygon` and `star` (`sides`, `inner_ratio`). Sizes are pixels, `"hug"` (auto-layout frame or text) or `"fill"` (stretch inside an auto-layout parent). A pixel width on a text node makes it wrap (`text_resize` overrides).
+- **Paints** (`fill`, `stroke.color`, `text_style.color`): `"#RRGGBB[AA]"`, `"none"`, a paint object or an array of them, bottom first. Objects: `solid`, `linear`, `radial`, `angular`, `diamond` (with `stops` and an optional `angle` in degrees, 0 up and clockwise, or raw `handles`), and `image` (`image_ref` of an image already in the document, or `image_base64` of a PNG, JPEG, GIF or WebP up to 16 MiB; `scale_mode` fill, fit, crop or tile). Every paint takes `opacity`, `blend` and `visible`.
+- **Effects** replace the node's effect list: `drop_shadow`, `inner_shadow` (`color`, `x`, `y`, `blur`, `spread`, `show_behind` for the drop shadow), `layer_blur`, `background_blur` (`blur`) and `glass` (`light_angle`, `light_intensity`, `refraction`, `depth`, `dispersion`, `frost`).
+- **Frames.** `clips_content`, `auto_layout` (`direction`, `gap`, `counter_gap`, `wrap`, `padding` as a number, `[vertical, horizontal]`, `[top, right, bottom, left]` or an object, `primary_align`, `counter_align`, `reverse_z`, `stroke_included`; `null` removes it), `layout_child` (`absolute`, `grow`, `min_width`, `max_width`, `min_height`, `max_height`) and `constraints` (`min`/`max`/`center`/`stretch`/`scale`, with `left`, `right`, `top`, `bottom` as aliases).
+- **Also.** `corner_radius` (one number or four, clockwise from top left), `corner_smoothing`, `rotation` (degrees around the top-left corner), `blend`, `opacity`, `visible`, `locked`, `is_mask`, and `stroke` (`color`, `width`, `align`, `cap`, `join`, `dashes`, `side_weights`). Text styles take `font_family`, `font_weight`, `italic`, `font_size`, `line_height` (pixels, `"auto"` or `"120%"`), `letter_spacing`, `paragraph_spacing`, `align_h`, `align_v`, `case`, `decoration`, `color` and OpenType `features`.
+- **Layout is solved for you.** Auto-layout frames touched by the call are laid out, and text boxes are measured, before the result is stored, so file sessions get the same positions the editor would compute. Siblings that the layout moves count in `updated`.
+- **Errors come back per node and nothing changes.** Every problem in the tree is listed with its path and the node's name, for example `nodes[0].children[2] "Badge": fill: stop pos 2 is outside 0..=1`. Unknown fields are errors, so a typo never silently does nothing. Pass `validate_only: true` to check a tree without applying it.
+- **Limits.** 5000 specs per call, 64 nesting levels. Components, instances, variables bindings, vector paths and noise or texture effects are not covered by this tool yet.
+- **Speed.** A 300-node screen (49 auto-layout rows with gradients, shadows and text) builds in about 70 ms in a release build (0.8 s unoptimized), including layout and validation.
 
 ## Live editor control
 
