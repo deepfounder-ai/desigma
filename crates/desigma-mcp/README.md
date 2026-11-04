@@ -182,4 +182,4 @@ cargo test --locked -p desigma-mcp
 
 `tests/evaluation.xml` contains ten independent, read-only retrieval questions based on the repository's fixed Figma REST fixture. For each question, start a fresh server with the repository root as `--workspace`, then preload `crates/desigma-fig/tests/fixtures/rest_file.json` using `desigma_open_file`. This preload is test setup; answering the questions requires only the read-only query/code tools. Do not create, update, delete, undo, redo, or save during evaluation. Match the response against the XML answer exactly.
 
-For a short workflow guide for agents (read assets, build, screenshot, fix) with a complete example, see [docs/agents.md](../../docs/agents.md).
+For a short workflow guide for agents (read assets, build, screenshot, fix) with a complete example, see [docs/mcp-guide.md](../../docs/mcp-guide.md).
