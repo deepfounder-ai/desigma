@@ -81,6 +81,9 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_get_variables` | Read collections and tokens; optionally resolve one node's direct bindings in its inherited modes. |
 | `desigma_generate_code` | Return CSS, Tailwind, React, SwiftUI, Compose, or SVG source without writing a file. |
 | `desigma_apply_nodes` | Create or update a whole node tree from JSON in one transaction and one undo step; see [Building whole screens](#building-whole-screens). |
+| `desigma_create_component` | Turn a layer into a main component: frames, groups and sections in place, other layers wrapped in a component frame. Returns `component_id`; see [Components](#components). |
+| `desigma_create_instance` | Create an instance of a component under `parent_id` at `x`/`y`, with `overrides` for text, fill, visibility and swap. One undo step; returns `instance_id`. |
+| `desigma_override_instance` | Change layers inside an existing instance by layer name; stored as overrides so they survive component updates. |
 | `desigma_create_node` | Add a frame, rectangle, ellipse, or text layer to a container. |
 | `desigma_update_node` | Change name, position, dimensions, visibility, opacity, or plain text. |
 | `desigma_delete_node` | Remove a non-page layer and its descendants. |
@@ -120,6 +123,19 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 - **Errors come back per node and nothing changes.** Every problem in the tree is listed with its path and the node's name, for example `nodes[0].children[2] "Badge": fill: stop pos 2 is outside 0..=1`. Unknown fields are errors, so a typo never silently does nothing. Pass `validate_only: true` to check a tree without applying it.
 - **Limits.** 5000 specs per call, 64 nesting levels. Components, instances, variables bindings, vector paths and noise or texture effects are not covered by this tool yet.
 - **Speed.** A 300-node screen (49 auto-layout rows with gradients, shadows and text) builds in about 70 ms in a release build (0.8 s unoptimized), including layout and validation.
+
+## Components
+
+`desigma_create_component {node_id}` makes a main component and returns `component_id`. `desigma_create_instance {component_id, parent_id, x, y, name?, overrides?}` places an instance (`origin` at x/y in the parent). `overrides` maps a layer name inside the component to the changes made there; the first layer with that name, depth first, is used and an unknown name lists the available ones:
+
+```json
+{"component_id": 12, "parent_id": 3, "x": 40, "y": 40,
+ "overrides": {"Label": {"text": "Buy now", "fill": "#ff3366"},
+               "Badge": {"visible": false},
+               "Icon":  {"swap": 31}}}
+```
+
+An override takes the same properties as a `desigma_apply_nodes` spec (`text`, `fill`, `stroke`, `visible`, `opacity`, `text_style`, ...) plus `swap` (a component id, for nested instances). Every change is recorded as an override, so syncing the component later does not undo it. In `desigma_apply_nodes` a spec may carry `"instance_of": <component id>` with the same `overrides` instead of `kind`/`children`, so a whole screen can mix plain layers and instances; the auto layout is solved around them. `desigma_override_instance {instance_id, overrides}` edits an instance that already exists; swaps run first as their own undo step. Updating a layer inside an instance with `desigma_apply_nodes {node_id}` records overrides in the same way.
 
 ## Live editor control
 

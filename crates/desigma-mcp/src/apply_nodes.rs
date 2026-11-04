@@ -8,9 +8,9 @@
 //! and rolled back if it is broken.
 use crate::engine::{bounded_text, colour, validate_document, Host};
 use desigma_doc::{
-    Affine, ArcData, AutoLayout, BlendMode, Color, Command, Constraint, Document, Effect, FrameProps, GlassEffect, GradientStop, ImageScaleMode, LayoutAlign,
-    LayoutDirection, LineHeight, Node, NodeId, NodeKind, Paint, PaintKind, Rect, Sizing, StrokeAlign, StrokeCap, StrokeJoin, TextAlignH, TextAlignV,
-    TextAutoResize, TextCase, TextDecoration, TextStyle, Vec2,
+    create_instance, record_override, swap_instance, Affine, ArcData, AutoLayout, BlendMode, Color, Command, Constraint, Document, Effect, FrameProps,
+    GlassEffect, GradientStop, ImageScaleMode, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind, OverrideField, Paint, PaintKind, Rect, Sizing,
+    StrokeAlign, StrokeCap, StrokeJoin, TextAlignH, TextAlignV, TextAutoResize, TextCase, TextDecoration, TextStyle, Vec2,
 };
 use serde::{de::DeserializeOwned, Deserialize, Deserializer};
 use serde_json::{json, Value};
@@ -71,6 +71,9 @@ struct Spec {
     sides: Option<u32>,
     inner_ratio: Option<f32>,
     children: Option<Vec<Value>>,
+    instance_of: Option<u64>,
+    overrides: Option<BTreeMap<String, Value>>,
+    swap: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -200,6 +203,8 @@ struct Planner<'a> {
     next_temp: u64,
     specs: usize,
     report: Vec<Value>,
+    /// Lazily cloned copy of the document that instances are built in.
+    scratch: Option<Document>,
 }
 
 /// Entry point for the `desigma_apply_nodes` tool.
@@ -217,6 +222,7 @@ pub fn apply_nodes<H: Host>(host: &mut H, args: Value) -> Result<Value, String> 
         next_temp: 0,
         specs: 0,
         report: Vec::new(),
+        scratch: None,
     };
     for (i, v) in a.nodes.iter().enumerate() {
         p.top_level(format!("nodes[{i}]"), v, a.parent_id);
@@ -334,6 +340,13 @@ impl<'a> Planner<'a> {
     /// Builds a new subtree, root first. Returns `None` when anything in it was invalid.
     fn create(&mut self, path: &str, spec: &Spec, depth: usize) -> Option<Vec<Node>> {
         let name = spec.name.clone().unwrap_or_default();
+        if let Some(component) = spec.instance_of {
+            return self.create_instance(path, spec, NodeId(component));
+        }
+        if spec.overrides.is_some() || spec.swap.is_some() {
+            self.err(path, &name, "overrides and swap only work together with instance_of");
+            return None;
+        }
         let Some(kind) = spec.kind.as_deref() else {
             self.err(path, &name, "kind is required for a new node (frame, group, rectangle, ellipse, text, line, polygon, star)");
             return None;
@@ -392,6 +405,126 @@ impl<'a> Planner<'a> {
         Some(out)
     }
 
+    /// Builds a new instance of `component` (root first, temp ids) and applies the overrides.
+    fn create_instance(&mut self, path: &str, spec: &Spec, component: NodeId) -> Option<Vec<Node>> {
+        let name = spec.name.clone().unwrap_or_default();
+        if spec.kind.is_some() || spec.children.is_some() || spec.node_id.is_some() {
+            self.err(path, &name, "instance_of cannot be combined with kind, children or node_id; use overrides for the inside");
+            return None;
+        }
+        if !matches!(self.doc.get(component).map(|n| &n.kind), Some(NodeKind::Component(_))) {
+            self.err(path, &name, format!("instance_of: node {} is not a main component", component.0));
+            return None;
+        }
+        let mut scratch = self.scratch.take().unwrap_or_else(|| self.doc.clone());
+        let nodes = self.build_instance(path, spec, component, &mut scratch);
+        self.scratch = Some(scratch);
+        nodes
+    }
+
+    fn build_instance(&mut self, path: &str, spec: &Spec, component: NodeId, scratch: &mut Document) -> Option<Vec<Node>> {
+        let name = spec.name.clone().unwrap_or_default();
+        let Some(container) = scratch.pages.first().copied() else {
+            self.err(path, &name, "document has no page");
+            return None;
+        };
+        let at = Vec2 { x: spec.x.unwrap_or(0.0), y: spec.y.unwrap_or(0.0) };
+        let cmd = create_instance(scratch, component, container, at);
+        if let Err(e) = cmd.apply(scratch) {
+            self.err(path, &name, format!("cannot create the instance: {e}"));
+            return None;
+        }
+        let root = scratch.get(container).and_then(|c| c.children.last().copied())?;
+        let overrides: Vec<(String, Spec)> = {
+            let mut out = Vec::new();
+            for (key, v) in spec.overrides.iter().flatten() {
+                let opath = format!("{path}.overrides.{key}");
+                match serde_json::from_value::<Spec>(v.clone()) {
+                    Ok(o)
+                        if o.node_id.is_some()
+                            || o.parent_id.is_some()
+                            || o.children.is_some()
+                            || o.instance_of.is_some()
+                            || o.overrides.is_some()
+                            || o.kind.is_some() =>
+                    {
+                        self.err(&opath, &name, "an override can only set properties (text, fill, visible, opacity, swap, ...)");
+                    }
+                    Ok(o) => out.push((key.clone(), o)),
+                    Err(e) => self.err(&opath, &name, e.to_string()),
+                }
+            }
+            out
+        };
+        // Swaps first: they rebuild the inside of the nested instance.
+        for (key, o) in &overrides {
+            let Some(to) = o.swap else { continue };
+            let opath = format!("{path}.overrides.{key}");
+            let Some(target) = crate::components::descendant_named(scratch, root, key) else {
+                self.err(&opath, &name, crate::components::missing_layer(scratch, root, key));
+                continue;
+            };
+            if !matches!(scratch.get(target).map(|n| &n.kind), Some(NodeKind::Instance { .. })) {
+                self.err(&opath, &name, "swap only works on a nested instance");
+            } else if !matches!(scratch.get(NodeId(to)).map(|n| &n.kind), Some(NodeKind::Component(_))) {
+                self.err(&opath, &name, format!("swap: node {to} is not a main component"));
+            } else if let Err(e) = swap_instance(scratch, target, NodeId(to)).apply(scratch) {
+                self.err(&opath, &name, format!("swap failed: {e}"));
+            }
+        }
+        let mut ids = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            ids.push(id);
+            if let Some(n) = scratch.get(id) {
+                stack.extend(n.children.iter().rev());
+            }
+        }
+        let map: BTreeMap<NodeId, NodeId> = ids.iter().map(|i| (*i, self.temp_id())).collect();
+        let mut nodes: Vec<Node> = ids
+            .iter()
+            .filter_map(|i| scratch.get(*i))
+            .map(|n| {
+                let mut n = n.clone();
+                n.id = map[&n.id];
+                n.parent = n.parent.and_then(|p| map.get(&p).copied());
+                n.children = n.children.iter().filter_map(|c| map.get(c).copied()).collect();
+                n
+            })
+            .collect();
+        nodes[0].parent = None;
+        let before = nodes.len();
+        let mut root_node = nodes[0].clone();
+        let mut ok = self.props(path, &mut root_node, spec, false);
+        nodes[0] = root_node;
+        for (key, o) in &overrides {
+            let opath = format!("{path}.overrides.{key}");
+            let found = nodes.iter().skip(1).position(|n| n.name == *key).map(|i| i + 1);
+            let Some(i) = found else {
+                if o.swap.is_none() {
+                    self.err(&opath, &name, crate::components::missing_layer_in(&nodes, key));
+                    ok = false;
+                }
+                continue;
+            };
+            if o.swap.is_some() && o.text.is_none() && o.fill.is_none() {
+                continue;
+            }
+            let orig = nodes[i].clone();
+            let mut node = orig.clone();
+            ok &= self.props(&opath, &mut node, o, false);
+            let fields = record_override(&orig, &node);
+            node.component.overrides.extend(fields.into_iter().filter(|f| *f != OverrideField::Transform));
+            nodes[i] = node;
+        }
+        debug_assert!(nodes.len() == before);
+        if !ok {
+            return None;
+        }
+        self.report.push(json!({"path":path,"node_id":nodes[0].id,"name":nodes[0].name,"created":true,"instance_of":component}));
+        Some(nodes)
+    }
+
     fn walk_bad_children(&mut self, path: &str, spec: &Spec, depth: usize) {
         for (i, cv) in spec.children.iter().flatten().enumerate() {
             let cpath = format!("{path}.children[{i}]");
@@ -408,6 +541,9 @@ impl<'a> Planner<'a> {
             return self.err(path, spec.name.as_deref().unwrap_or(""), format!("node {} not found", id.0));
         };
         let name = orig.name.clone();
+        if spec.instance_of.is_some() || spec.overrides.is_some() || spec.swap.is_some() {
+            return self.err(path, &name, "instance_of, overrides and swap create new instances; to change an existing one use desigma_override_instance");
+        }
         if orig.parent.is_none() {
             return self.err(path, &name, "page roots cannot be updated by this tool");
         }
@@ -448,6 +584,11 @@ impl<'a> Planner<'a> {
                     }
                 }
             }
+        }
+        if ok && orig.component.source.is_some() {
+            // An edit inside an instance is an override, or the next sync would undo it.
+            let fields = record_override(orig, &node);
+            node.component.overrides.extend(fields.into_iter().filter(|f| *f != OverrideField::Transform));
         }
         if ok && self.errors.len() == before && self.doc.get(id) != Some(&node) {
             self.report.push(json!({"path":path,"node_id":id,"name":node.name,"created":false}));
@@ -1273,6 +1414,8 @@ pub fn schema() -> Value {
             "text_style":{"type":"object","description":"Text nodes: {font_family, font_weight 100-900, italic, font_size, line_height (px | \"auto\" | \"120%\"), letter_spacing, paragraph_spacing, align_h:left|center|right|justified, align_v:top|center|bottom, case:original|upper|lower|title|small_caps, decoration:none|underline|strikethrough, color (as fill), features:{tnum:1}}."},
             "text_resize":{"type":"string","enum":["auto_width","auto_height","fixed","truncate"],"description":"Default: auto_width, or auto_height when a width is given."},
             "sides":{"type":"integer","minimum":3,"maximum":64,"description":"polygon and star."},
+            "instance_of":{"type":"integer","minimum":1,"description":"Create an instance of this main component instead of a plain node (no kind/children). x, y, name, opacity and visible apply to the instance."},
+            "overrides":{"type":"object","description":"With instance_of: layer name inside the component -> {text, fill, stroke, visible, opacity, swap (component id), ...}.","additionalProperties":{"type":"object"}},
             "inner_ratio":{"type":"number","description":"star."},
             "children":{"type":"array","items":{"type":"object"},"description":"Child node specs, same shape, back to front."}
         },

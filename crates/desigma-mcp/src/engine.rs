@@ -72,6 +72,9 @@ impl Engine {
 pub const EDIT_TOOLS: &[&str] = &[
     "desigma_create_node",
     "desigma_apply_nodes",
+    "desigma_create_component",
+    "desigma_create_instance",
+    "desigma_override_instance",
     "desigma_create_page",
     "desigma_update_node",
     "desigma_move_node",
@@ -162,6 +165,9 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         }
         "desigma_create_node" => create(host, parse(args)?),
         "desigma_apply_nodes" => crate::apply_nodes::apply_nodes(host, args),
+        "desigma_create_component" => crate::components::create_component(host, args),
+        "desigma_create_instance" => crate::components::create_instance(host, args),
+        "desigma_override_instance" => crate::components::override_instance(host, args),
         "desigma_update_node" => update(host, parse(args)?),
         "desigma_delete_page" => {
             let a: NodeArgs = parse(args)?;
@@ -874,6 +880,12 @@ pub fn tools() -> Vec<Value> {
         false,
         false,
     );
+    add("create_component","Turn a layer into a main component. Frames, groups and sections convert in place; other layers (rectangle, text, ...) are wrapped in a new component frame of the same size; an instance becomes a component. Returns component_id. One undo step. Changes remain in memory until saved.",
+        json!({"node_id":id}),vec!["node_id"],false,false);
+    add("create_instance","Create an instance of a main component under parent_id with its origin at x/y (parent space). overrides maps a layer name inside the component to the changes to make there: {\"Label\":{\"text\":\"Buy\"},\"Icon\":{\"swap\":<component id>},\"Badge\":{\"visible\":false},\"Bg\":{\"fill\":\"#ff3366\"}}. Same property names as desigma_apply_nodes. One undo step. Returns instance_id. Changes remain in memory until saved.",
+        json!({"component_id":id,"parent_id":id,"x":coordinate,"y":coordinate,"name":name,"index":{"type":"integer","minimum":0},"overrides":{"type":"object","description":"Layer name -> {text, fill, stroke, visible, opacity, swap (component id), ...}.","additionalProperties":{"type":"object"}}}),vec!["component_id","parent_id"],false,false);
+    add("override_instance","Change layers inside an existing instance by layer name: text, fill, stroke, visible, opacity or swap (component id, nested instances only). Each change is stored as an override, so it survives component updates. Swaps are applied first, as their own undo step; the other changes are one step.",
+        json!({"instance_id":id,"overrides":{"type":"object","additionalProperties":{"type":"object"}}}),vec!["instance_id","overrides"],false,false);
     add("import_svg","Import SVG markup as one frame under parent_id, top-left at (x, y). Real child layers (paths, text, groups) are created rather than a flat bitmap; bitmap bytes inside the SVG become document assets. Supports undo as one step; changes remain in memory until saved.",json!({"parent_id":id,"svg":{"type":"string","maxLength":8388608,"description":"SVG markup; at most 8 MiB. Pass this or path."},"path":{"type":"string","description":"Workspace-relative .svg file to import instead of inline markup; the layer takes the file name unless name is given."},"name":name,"x":coordinate,"y":coordinate}),vec!["parent_id"],false,false);
     add("update_node","Update specified fields of one non-page layer. Coordinates are parent-relative. Replacing text clears text runs and list ranges. Supports undo; changes remain in memory until saved.",
         json!({"node_id":id,"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size,"visible":{"type":"boolean"},"opacity":{"type":"number","minimum":0,"maximum":1}}),vec!["node_id"],false,true);
