@@ -128,3 +128,60 @@ fn override_instance_and_swap() {
     let action = e.doc.get(e.doc.get(NodeId(c3)).unwrap().children[0]).unwrap();
     assert!(matches!(action.kind, NodeKind::Instance { component: Some(c), .. } if c == NodeId(comp)));
 }
+
+#[test]
+fn override_instance_is_all_or_nothing_and_one_undo_step() {
+    let mut e = Engine::default();
+    let p = page(&mut e);
+    let b = button(&mut e, p);
+    e.call("desigma_create_component", json!({"node_id":b})).unwrap();
+    let dot = e.call("desigma_apply_nodes", json!({"parent_id":p,"nodes":[{"kind":"ellipse","name":"Dot","width":16,"height":16}]})).unwrap()["nodes"][0]
+        ["node_id"]
+        .as_u64()
+        .unwrap();
+    let comp = e.call("desigma_create_component", json!({"node_id":dot})).unwrap()["component_id"].as_u64().unwrap();
+    let card = e
+        .call(
+            "desigma_apply_nodes",
+            json!({"parent_id":p,"nodes":[{"kind":"frame","name":"Card","width":200,"height":80,"children":[{"instance_of":b,"name":"Action"}]}]}),
+        )
+        .unwrap()["nodes"][0]["node_id"]
+        .as_u64()
+        .unwrap();
+    e.call("desigma_create_component", json!({"node_id":card})).unwrap();
+    let i = e.call("desigma_create_instance", json!({"component_id":card,"parent_id":p})).unwrap()["instance_id"].as_u64().unwrap();
+    let before = e.doc.to_json().unwrap();
+    let nodes_before = e.doc.nodes.clone();
+    let steps = e.history.undo_len();
+
+    // A valid swap next to an invalid override: nothing may change.
+    let err = e.call("desigma_override_instance", json!({"instance_id":i,"overrides":{"Action":{"swap":comp},"Nope":{"visible":false}}})).unwrap_err();
+    assert!(err.contains("Nope"), "{err}");
+    assert_eq!(e.doc.to_json().unwrap(), before);
+    assert_eq!(e.history.undo_len(), steps);
+    let err = e.call("desigma_override_instance", json!({"instance_id":i,"overrides":{"Action":{"swap":comp,"opacity":7}}})).unwrap_err();
+    assert!(err.contains("opacity"), "{err}");
+    assert_eq!(e.doc.to_json().unwrap(), before);
+    assert_eq!(e.history.undo_len(), steps);
+
+    // A valid pair is one undo step.
+    let r = e.call("desigma_override_instance", json!({"instance_id":i,"overrides":{"Action":{"swap":comp,"opacity":0.5}}})).unwrap();
+    assert_eq!(r["swapped"], 1);
+    assert_eq!(e.history.undo_len(), steps + 1);
+    validate_document(&e.doc).unwrap();
+    e.call("desigma_undo", json!({})).unwrap();
+    assert_eq!(e.doc.nodes, nodes_before);
+}
+
+#[test]
+fn override_instance_rejects_a_non_number_swap() {
+    let mut e = Engine::default();
+    let p = page(&mut e);
+    let b = button(&mut e, p);
+    e.call("desigma_create_component", json!({"node_id":b})).unwrap();
+    let i = e.call("desigma_create_instance", json!({"component_id":b,"parent_id":p})).unwrap()["instance_id"].as_u64().unwrap();
+    for bad in [json!("12"), json!(1.5), json!(-3), json!(null)] {
+        let err = e.call("desigma_override_instance", json!({"instance_id":i,"overrides":{"Label":{"swap":bad}}})).unwrap_err();
+        assert!(err.contains("swap must be"), "{err}");
+    }
+}
