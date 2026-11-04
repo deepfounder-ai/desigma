@@ -75,6 +75,7 @@ struct Spec {
     overrides: Option<BTreeMap<String, Value>>,
     swap: Option<u64>,
     bind: Option<BTreeMap<String, Option<String>>>,
+    replace_children: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -206,6 +207,10 @@ struct Planner<'a> {
     report: Vec<Value>,
     /// Lazily cloned copy of the document that instances are built in.
     scratch: Option<Document>,
+    /// Children dropped by `replace_children`.
+    removals: Vec<NodeId>,
+    /// Final child order per container updated with `replace_children`.
+    reorders: Vec<(NodeId, Vec<NodeId>)>,
 }
 
 /// Entry point for the `desigma_apply_nodes` tool.
@@ -224,6 +229,8 @@ pub fn apply_nodes<H: Host>(host: &mut H, args: Value) -> Result<Value, String> 
         specs: 0,
         report: Vec::new(),
         scratch: None,
+        removals: Vec::new(),
+        reorders: Vec::new(),
     };
     for (i, v) in a.nodes.iter().enumerate() {
         p.top_level(format!("nodes[{i}]"), v, a.parent_id);
@@ -232,12 +239,12 @@ pub fn apply_nodes<H: Host>(host: &mut H, args: Value) -> Result<Value, String> 
         return Err(format_errors(&p.errors));
     }
     p.layout();
-    let Planner { updates, inserts, images, report, next_temp, .. } = p;
+    let Planner { updates, inserts, images, report, next_temp, removals, reorders, .. } = p;
     let (created, updated) = (inserts.iter().map(|i| i.2.len()).sum::<usize>(), updates.len());
     if a.validate_only {
         return Ok(json!({"changed":false,"valid":true,"would_create":created,"would_update":updated}));
     }
-    if created == 0 && updates.iter().all(|(id, n)| host.doc().get(*id) == Some(n)) {
+    if created == 0 && removals.is_empty() && updates.iter().all(|(id, n)| host.doc().get(*id) == Some(n)) {
         return Ok(json!({"changed":false,"created":0,"updated":0,"nodes":[]}));
     }
     // Only now, with a clean plan, spend real ids.
@@ -247,8 +254,16 @@ pub fn apply_nodes<H: Host>(host: &mut H, args: Value) -> Result<Value, String> 
     }
     let map = |id: NodeId| if id.0 >= TEMP_BASE { real.get((id.0 - TEMP_BASE) as usize).copied().unwrap_or(id) } else { id };
     let mut cmds = Vec::new();
-    for (_, node) in updates {
+    for (id, mut node) in updates {
+        // Children are changed by Insert, Remove and Reparent below, never by Update.
+        if let Some(orig) = host.doc().get(id) {
+            node.children = orig.children.clone();
+        }
         cmds.push(Command::Update { node: Box::new(node) });
+    }
+    let removed = removals.len();
+    for id in removals {
+        cmds.push(Command::Remove { id });
     }
     for (parent, index, mut nodes) in inserts {
         for n in &mut nodes {
@@ -257,6 +272,11 @@ pub fn apply_nodes<H: Host>(host: &mut H, args: Value) -> Result<Value, String> 
             n.children = n.children.iter().copied().map(map).collect();
         }
         cmds.push(Command::Insert { parent, index, nodes });
+    }
+    for (parent, order) in reorders {
+        for (index, id) in order.into_iter().enumerate() {
+            cmds.push(Command::Reparent { id: map(id), parent, index });
+        }
     }
     host.exec(Command::Batch(cmds))?;
     if let Err(e) = validate_document(host.doc()) {
@@ -277,7 +297,7 @@ pub fn apply_nodes<H: Host>(host: &mut H, args: Value) -> Result<Value, String> 
             r
         })
         .collect();
-    Ok(json!({"changed":true,"created":created,"updated":updated,"nodes":report,"undo_steps":1}))
+    Ok(json!({"changed":true,"created":created,"updated":updated,"removed":removed,"nodes":report,"undo_steps":1}))
 }
 
 fn format_errors(errors: &[NodeError]) -> String {
@@ -567,6 +587,11 @@ impl<'a> Planner<'a> {
             self.err(path, &name, "children are only valid on frame, group and other container kinds");
         }
         let existing: BTreeSet<NodeId> = node.children.iter().copied().collect();
+        let replace = spec.replace_children == Some(true);
+        if replace && !has_children {
+            self.err(path, &name, "replace_children needs a children list (use [] to remove all)");
+        }
+        let mut order: Vec<NodeId> = Vec::new();
         for (i, cv) in spec.children.iter().flatten().enumerate() {
             let cpath = format!("{path}.children[{i}]");
             let Some(cs) = self.parse_spec(&cpath, cv) else { continue };
@@ -578,12 +603,26 @@ impl<'a> Planner<'a> {
                 Some(cid) if !existing.contains(&NodeId(cid)) => {
                     self.err(&cpath, cs.name.as_deref().unwrap_or(""), format!("node {cid} is not a child of {}; use desigma_move_node first", id.0))
                 }
-                Some(cid) => self.update(&cpath, cs, NodeId(cid), depth + 1),
+                Some(cid) => {
+                    order.push(NodeId(cid));
+                    self.update(&cpath, cs, NodeId(cid), depth + 1)
+                }
                 None => {
                     if let Some(nodes) = self.create(&cpath, &cs, depth + 1) {
+                        order.push(nodes[0].id);
                         self.inserts.push((id, usize::MAX, nodes));
                     }
                 }
+            }
+        }
+        if replace && self.errors.len() == before {
+            let keep: BTreeSet<NodeId> = order.iter().copied().collect();
+            if keep.len() != order.len() {
+                self.err(path, &name, "replace_children lists a child twice");
+            } else {
+                self.removals.extend(node.children.iter().copied().filter(|c| !keep.contains(c)));
+                node.children = order.clone();
+                self.reorders.push((id, order));
             }
         }
         if ok && orig.component.source.is_some() {
@@ -636,6 +675,16 @@ impl<'a> Planner<'a> {
                 existing_roots.insert(p);
             }
         }
+        // A container that grows or shrinks moves its siblings and resizes hugging ancestors,
+        // so every auto-layout ancestor above a touched container is solved too.
+        for seed in existing_roots.clone() {
+            let mut cur = doc.get(seed).and_then(|n| n.parent);
+            while let Some(p) = cur {
+                let Some(pn) = doc.get(p).filter(|n| is_layout(n)) else { break };
+                existing_roots.insert(p);
+                cur = pn.parent;
+            }
+        }
         // Drop roots that sit inside another root: laying out the outer one covers them.
         let roots: Vec<NodeId> = existing_roots.iter().copied().filter(|r| !is_inside_any(doc, *r, &existing_roots)).collect();
         for root in roots {
@@ -660,7 +709,7 @@ impl<'a> Planner<'a> {
         let Some(orig) = self.doc.get(id) else { return };
         let mut node = self.updates.get(&id).unwrap_or(orig).clone();
         for (parent, _, nodes) in &self.inserts {
-            if *parent == id {
+            if *parent == id && !node.children.contains(&nodes[0].id) {
                 node.children.push(nodes[0].id);
             }
         }
@@ -1420,6 +1469,7 @@ pub fn schema() -> Value {
             "text_style":{"type":"object","description":"Text nodes: {font_family, font_weight 100-900, italic, font_size, line_height (px | \"auto\" | \"120%\"), letter_spacing, paragraph_spacing, align_h:left|center|right|justified, align_v:top|center|bottom, case:original|upper|lower|title|small_caps, decoration:none|underline|strikethrough, color (as fill), features:{tnum:1}}."},
             "text_resize":{"type":"string","enum":["auto_width","auto_height","fixed","truncate"],"description":"Default: auto_width, or auto_height when a width is given."},
             "sides":{"type":"integer","minimum":3,"maximum":64,"description":"polygon and star."},
+            "replace_children":{"type":"boolean","description":"Update only: children is the complete new child list. Entries with node_id keep (and reorder) that child, entries without are created, children not listed are deleted. Needs children (use [] to remove all)."},
             "instance_of":{"type":"integer","minimum":1,"description":"Create an instance of this main component instead of a plain node (no kind/children). x, y, name, opacity and visible apply to the instance."},
             "bind":{"type":"object","description":"Bind variables by name: {fill, stroke, stroke_width, gap, counter_gap, padding, radius, width, height, size, opacity, visible, text, font_size, font_weight, line_height, letter_spacing} -> variable name (or id), null to unbind. The variable's default-mode value is written into the node; create variables with desigma_set_variables. Gap and padding need auto_layout, fill and stroke need a fill or stroke in the same spec.","additionalProperties":{"type":["string","null"]}},
             "overrides":{"type":"object","description":"With instance_of: layer name inside the component -> {text, fill, stroke, visible, opacity, swap (component id), ...}.","additionalProperties":{"type":"object"}},

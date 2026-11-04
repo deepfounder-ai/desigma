@@ -129,6 +129,8 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 - **Limits.** 5000 specs per call, 64 nesting levels. Components, instances, variables bindings, vector paths and noise or texture effects are not covered by this tool yet.
 - **Speed.** A 300-node screen (49 auto-layout rows with gradients, shadows and text) builds in about 70 ms in a release build (0.8 s unoptimized), including layout and validation.
 
+Two things worth knowing when editing a screen that already exists. Laying out a container that changed also re-solves every auto-layout ancestor above it, so siblings move and hugging parents grow or shrink. And an update with `"replace_children": true` treats `children` as the complete new list: entries with `node_id` keep and reorder that child, entries without are created, children not listed are deleted (`[]` removes all), all in the same single undo step.
+
 ## Components
 
 `desigma_create_component {node_id}` makes a main component and returns `component_id`. `desigma_create_instance {component_id, parent_id, x, y, name?, overrides?}` places an instance (`origin` at x/y in the parent). `overrides` maps a layer name inside the component to the changes made there; the first layer with that name, depth first, is used and an unknown name lists the available ones:
