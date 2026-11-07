@@ -16,10 +16,11 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
         let schema = tools.iter().find(|t| t.name == "desigma_delete_page").unwrap().input_schema.clone();
         assert_eq!(schema["properties"]["node_id"]["type"], "integer");
-        assert_eq!(tools.len(), 27);
-        assert_eq!(tools.len(), 27);
-        assert_eq!(tools.len(), 27);
-        assert_eq!(tools.len(), 27);
+        // 27（上游）+ 5（本地扩展：组件 / 实例 / 页面重命名）
+        for name in ["desigma_create_component", "desigma_create_instance", "desigma_detach_instance", "desigma_sync_instances", "desigma_rename_page"] {
+            assert!(tools.iter().any(|t| t.name == name), "missing local tool {name}");
+        }
+        assert_eq!(tools.len(), 32);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -384,4 +385,103 @@ fn batched_requests_run_in_order() {
     let _ = child.kill();
     let _ = child.wait();
     assert_eq!(ids, (0..=N).collect::<Vec<_>>(), "responses come back in request order");
+}
+
+/// 本地扩展工具（组件 / 实例 / 页面重命名）的完整往返：上游没有这 5 个，改动必须自证。
+#[tokio::test]
+async fn components_instances_and_page_rename_round_trip() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+
+        let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        let page = doc.structured_content.unwrap()["pages"][0]["node_id"].clone();
+
+        // 组件：frame 就地转主组件，可改名
+        let card = client
+            .call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"card","width":400,"height":200})))
+            .await
+            .unwrap();
+        let card_id = card.structured_content.unwrap()["node"]["id"].clone();
+        let comp = client
+            .call_tool(call("desigma_create_component", json!({"node_id":card_id,"name":"CardMain"})))
+            .await
+            .unwrap();
+        assert_eq!(comp.is_error, Some(false), "{comp:?}");
+        let comp_sc = comp.structured_content.unwrap();
+        assert_eq!(comp_sc["component_id"], card_id);
+        assert_eq!(comp_sc["node"]["name"], "CardMain");
+
+        // 负向：矩形不能变成组件
+        let rect = client
+            .call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"rectangle","name":"row","width":100,"height":40})))
+            .await
+            .unwrap();
+        let rect_id = rect.structured_content.unwrap()["node"]["id"].clone();
+        let refused = client.call_tool(call("desigma_create_component", json!({"node_id":rect_id}))).await.unwrap();
+        assert_eq!(refused.is_error, Some(true));
+
+        // 实例：挂到另一个 frame（直接挂 Page 会被拒）
+        let host = client
+            .call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"host","width":600,"height":400})))
+            .await
+            .unwrap();
+        let host_id = host.structured_content.unwrap()["node"]["id"].clone();
+        // 负向：父级就是组件自己 —— 会产生自引用，必须被拒
+        let bad_parent = client
+            .call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":card_id,"x":0.0,"y":0.0})))
+            .await
+            .unwrap();
+        assert_eq!(bad_parent.is_error, Some(true), "组件不能实例化到自己里面");
+        // 负向：非组件的普通图层不能当组件实例化
+        let bad_component = client
+            .call_tool(call("desigma_create_instance", json!({"component_id":rect_id,"parent_id":host_id,"x":0.0,"y":0.0})))
+            .await
+            .unwrap();
+        assert_eq!(bad_component.is_error, Some(true), "矩形不是主组件，应当被拒");
+        let inst = client
+            .call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":host_id,"x":12.0,"y":24.0})))
+            .await
+            .unwrap();
+        assert_eq!(inst.is_error, Some(false), "{inst:?}");
+        let instance_id = inst.structured_content.unwrap()["instance_id"].clone();
+        assert!(instance_id.as_u64().is_some());
+
+        // 同步：把主组件当前状态刷到所有实例
+        let synced = client.call_tool(call("desigma_sync_instances", json!({"component_id":card_id}))).await.unwrap();
+        assert_eq!(synced.is_error, Some(false), "{synced:?}");
+        assert_eq!(synced.structured_content.unwrap()["synced"], true);
+        // 负向：非组件不能同步
+        let bad_sync = client.call_tool(call("desigma_sync_instances", json!({"component_id":rect_id}))).await.unwrap();
+        assert_eq!(bad_sync.is_error, Some(true));
+
+        // 分离：实例变普通图层，且可撤回
+        let detached = client.call_tool(call("desigma_detach_instance", json!({"node_id":instance_id}))).await.unwrap();
+        assert_eq!(detached.is_error, Some(false), "{detached:?}");
+        assert_eq!(detached.structured_content.unwrap()["detached"], true);
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let still_instance = client.call_tool(call("desigma_get_node", json!({"node_id":instance_id}))).await.unwrap();
+        assert_eq!(still_instance.is_error, Some(false), "撤回分离后实例应回来");
+
+        // 页面重命名：可撤回
+        let before = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        let old_name = before.structured_content.unwrap()["pages"][0]["name"].clone();
+        let renamed = client.call_tool(call("desigma_rename_page", json!({"page_id":page,"name":"Renamed"}))).await.unwrap();
+        assert_eq!(renamed.is_error, Some(false), "{renamed:?}");
+        let after = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        assert_eq!(after.structured_content.unwrap()["pages"][0]["name"], "Renamed");
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let undone = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        assert_eq!(undone.structured_content.unwrap()["pages"][0]["name"], old_name);
+        // 负向：非页面节点不能当页面改名
+        let not_page = client.call_tool(call("desigma_rename_page", json!({"page_id":rect_id,"name":"x"}))).await.unwrap();
+        assert_eq!(not_page.is_error, Some(true));
+
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
 }
