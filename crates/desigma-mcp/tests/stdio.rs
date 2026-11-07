@@ -401,51 +401,34 @@ async fn components_instances_and_page_rename_round_trip() {
         let page = doc.structured_content.unwrap()["pages"][0]["node_id"].clone();
 
         // 组件：frame 就地转主组件，可改名
-        let card = client
-            .call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"card","width":400,"height":200})))
-            .await
-            .unwrap();
+        let card =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"card","width":400,"height":200}))).await.unwrap();
         let card_id = card.structured_content.unwrap()["node"]["id"].clone();
-        let comp = client
-            .call_tool(call("desigma_create_component", json!({"node_id":card_id,"name":"CardMain"})))
-            .await
-            .unwrap();
+        let comp = client.call_tool(call("desigma_create_component", json!({"node_id":card_id,"name":"CardMain"}))).await.unwrap();
         assert_eq!(comp.is_error, Some(false), "{comp:?}");
         let comp_sc = comp.structured_content.unwrap();
         assert_eq!(comp_sc["component_id"], card_id);
         assert_eq!(comp_sc["node"]["name"], "CardMain");
 
         // 负向：矩形不能变成组件
-        let rect = client
-            .call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"rectangle","name":"row","width":100,"height":40})))
-            .await
-            .unwrap();
+        let rect =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"rectangle","name":"row","width":100,"height":40}))).await.unwrap();
         let rect_id = rect.structured_content.unwrap()["node"]["id"].clone();
         let refused = client.call_tool(call("desigma_create_component", json!({"node_id":rect_id}))).await.unwrap();
         assert_eq!(refused.is_error, Some(true));
 
         // 实例：挂到另一个 frame（直接挂 Page 会被拒）
-        let host = client
-            .call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"host","width":600,"height":400})))
-            .await
-            .unwrap();
+        let host =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"host","width":600,"height":400}))).await.unwrap();
         let host_id = host.structured_content.unwrap()["node"]["id"].clone();
         // 负向：父级就是组件自己 —— 会产生自引用，必须被拒
-        let bad_parent = client
-            .call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":card_id,"x":0.0,"y":0.0})))
-            .await
-            .unwrap();
+        let bad_parent = client.call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":card_id,"x":0.0,"y":0.0}))).await.unwrap();
         assert_eq!(bad_parent.is_error, Some(true), "组件不能实例化到自己里面");
         // 负向：非组件的普通图层不能当组件实例化
-        let bad_component = client
-            .call_tool(call("desigma_create_instance", json!({"component_id":rect_id,"parent_id":host_id,"x":0.0,"y":0.0})))
-            .await
-            .unwrap();
+        let bad_component =
+            client.call_tool(call("desigma_create_instance", json!({"component_id":rect_id,"parent_id":host_id,"x":0.0,"y":0.0}))).await.unwrap();
         assert_eq!(bad_component.is_error, Some(true), "矩形不是主组件，应当被拒");
-        let inst = client
-            .call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":host_id,"x":12.0,"y":24.0})))
-            .await
-            .unwrap();
+        let inst = client.call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":host_id,"x":12.0,"y":24.0}))).await.unwrap();
         assert_eq!(inst.is_error, Some(false), "{inst:?}");
         let instance_id = inst.structured_content.unwrap()["instance_id"].clone();
         assert!(instance_id.as_u64().is_some());

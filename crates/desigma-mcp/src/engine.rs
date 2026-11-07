@@ -79,6 +79,13 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_import_svg",
     "desigma_delete_node",
     "desigma_delete_page",
+    // 本地扩展工具（组件 / 实例 / 页面重命名）：同样改文档，必须登记，
+    // 否则传输层不会标记 dirty、编辑器桥接也不会在用户手势中拦下它们。
+    "desigma_create_component",
+    "desigma_create_instance",
+    "desigma_detach_instance",
+    "desigma_sync_instances",
+    "desigma_rename_page",
     "desigma_undo",
     "desigma_redo",
     "desigma_add_keyframe",
@@ -1040,7 +1047,7 @@ pub fn tools() -> Vec<Value> {
         "rename_page",
         "Rename a page; page roots cannot be renamed with update_node. Supports undo; changes remain in memory until saved.",
         json!({"page_id":id,"name":{"type":"string","minLength":1,"maxLength":1024}}),
-        vec!["page_id","name"],
+        vec!["page_id", "name"],
         false,
         true,
     );
