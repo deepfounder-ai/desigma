@@ -79,6 +79,13 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_import_svg",
     "desigma_delete_node",
     "desigma_delete_page",
+    // 本地扩展工具（组件 / 实例 / 页面重命名）：同样改文档，必须登记，
+    // 否则传输层不会标记 dirty、编辑器桥接也不会在用户手势中拦下它们。
+    "desigma_create_component",
+    "desigma_create_instance",
+    "desigma_detach_instance",
+    "desigma_sync_instances",
+    "desigma_rename_page",
     "desigma_undo",
     "desigma_redo",
     "desigma_add_keyframe",
@@ -204,6 +211,69 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             let id = n.id;
             host.exec(Command::Remove { id })?;
             Ok(json!({"node_id":id,"deleted":true}))
+        }
+        // ---- 本地扩展（上游未提供，2026-11-07 按 desigma-doc 现成 API 重挂）----
+        "desigma_create_component" => {
+            let a: CreateComponentArgs = parse(args)?;
+            let kind = node(host, a.node_id)?.kind.clone();
+            if !matches!(kind, NodeKind::Frame(_) | NodeKind::Group | NodeKind::Section) {
+                return Err("only frame / group / section layers can become a component".into());
+            }
+            let cmd = desigma_doc::create_component(host.doc_mut(), NodeId(a.node_id));
+            host.exec(cmd)?;
+            if let Some(name) = a.name {
+                bounded_text("name", &name, 1024)?;
+                let mut n = host.doc().get(NodeId(a.node_id)).cloned().ok_or("component vanished")?;
+                n.name = name;
+                host.exec(Command::Update { node: Box::new(n) })?;
+            }
+            Ok(json!({"component_id":a.node_id,"node":host.doc().get(NodeId(a.node_id))}))
+        }
+        "desigma_create_instance" => {
+            let a: CreateInstanceArgs = parse(args)?;
+            let at = desigma_doc::Vec2::new(a.x, a.y);
+            let cmd = desigma_doc::create_instance(host.doc_mut(), NodeId(a.component_id), NodeId(a.parent_id), at);
+            let instance_id = match &cmd {
+                Command::Insert { nodes, .. } => nodes.first().map(|n| n.id.0),
+                _ => None,
+            };
+            let Some(instance_id) = instance_id else {
+                return Err("cannot instantiate: component must be a Component and parent must be a container that does not contain it".into());
+            };
+            host.exec(cmd)?;
+            Ok(json!({"instance_id":instance_id,"component_id":a.component_id}))
+        }
+        "desigma_detach_instance" => {
+            let a: NodeArgs = parse(args)?;
+            let kind = node(host, a.node_id)?.kind.clone();
+            if !matches!(kind, NodeKind::Instance { .. }) {
+                return Err("only instances can be detached".into());
+            }
+            let cmd = desigma_doc::detach_instance(host.doc_mut(), NodeId(a.node_id));
+            host.exec(cmd)?;
+            Ok(json!({"node_id":a.node_id,"detached":true}))
+        }
+        "desigma_sync_instances" => {
+            let a: SyncArgs = parse(args)?;
+            let kind = node(host, a.component_id)?.kind.clone();
+            if !matches!(kind, NodeKind::Component(_) | NodeKind::ComponentSet(_)) {
+                return Err(format!("node {} is not a main component or component set", a.component_id));
+            }
+            let cmd = desigma_doc::sync_instances(host.doc_mut(), NodeId(a.component_id));
+            host.exec(cmd)?;
+            Ok(json!({"component_id":a.component_id,"synced":true}))
+        }
+        "desigma_rename_page" => {
+            let a: RenamePageArgs = parse(args)?;
+            bounded_text("name", &a.name, 1024)?;
+            let mut page = node(host, a.page_id)?.clone();
+            if !matches!(page.kind, NodeKind::Page { .. }) || page.parent.is_some() {
+                return Err(format!("node {} is not a page", a.page_id));
+            }
+            page.name = a.name.clone();
+            // 页面根节点同样走 `Command::Update`，因此可撤销（旧本地版是直写模型、不可撤销）。
+            host.exec(Command::Update { node: Box::new(page) })?;
+            Ok(json!({"page_id":a.page_id,"name":a.name}))
         }
         "desigma_undo" | "desigma_redo" => {
             let _: Empty = parse(args)?;
@@ -739,6 +809,39 @@ struct TextStyleArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CreateComponentArgs {
+    node_id: u64,
+    /// Main component name; the layer keeps its own name when omitted.
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateInstanceArgs {
+    component_id: u64,
+    /// Container that receives the instance (frame, group or section).
+    parent_id: u64,
+    #[serde(default)]
+    x: f32,
+    #[serde(default)]
+    y: f32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyncArgs {
+    component_id: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenamePageArgs {
+    page_id: u64,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UpdateArgs {
     node_id: u64,
     name: Option<String>,
@@ -906,6 +1009,47 @@ pub fn tools() -> Vec<Value> {
         vec!["node_id"],
         false,
         false,
+    );
+    // ---- 本地扩展：组件 / 实例 / 页面重命名（上游未提供）----
+    add(
+        "create_component",
+        "Turn a frame / group / section layer into a main component in place, optionally renaming it. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id,"name":name}),
+        vec!["node_id"],
+        false,
+        false,
+    );
+    add(
+        "create_instance",
+        "Place an instance of a main component inside another container (frame, group or section; a page is not a container). Supports undo; changes remain in memory until saved.",
+        json!({"component_id":id,"parent_id":id,"x":coordinate,"y":coordinate}),
+        vec!["component_id","parent_id"],
+        false,
+        false,
+    );
+    add(
+        "detach_instance",
+        "Detach an instance in place: its mirrored subtree becomes ordinary layers. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id}),
+        vec!["node_id"],
+        false,
+        false,
+    );
+    add(
+        "sync_instances",
+        "Re-apply a main component's current state to every instance of it (needed after editing a component in a way that does not sync, e.g. set_appearance). Supports undo; changes remain in memory until saved.",
+        json!({"component_id":id}),
+        vec!["component_id"],
+        false,
+        true,
+    );
+    add(
+        "rename_page",
+        "Rename a page; page roots cannot be renamed with update_node. Supports undo; changes remain in memory until saved.",
+        json!({"page_id":id,"name":{"type":"string","minLength":1,"maxLength":1024}}),
+        vec!["page_id", "name"],
+        false,
+        true,
     );
     add("undo", "Undo the latest successful edit; returns changed=false if the stack is empty. In the editor the stack is shared with the user, so this may undo their latest edit.", json!({}), vec![], false, false);
     add(
