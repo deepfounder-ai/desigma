@@ -1,0 +1,21 @@
+fusion-desigma shell layer
+Copyright (c) 2026 the fusion project
+
+This distribution is a shell-layer packaging of desigma, an independent
+open-source design tool:
+
+  desigma  https://github.com/deepfounder-ai/desigma
+  Copyright (c) the desigma contributors
+  Licensed under MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE).
+
+The `crates/`, `packaging/` and `assets/` trees track the upstream desigma
+repository and are not modified by the fusion project. All fusion-specific
+adaptation lives in shell-layer files (`start.sh`, `bin/`, `scripts/`,
+`docs/`, this NOTICE) and is listed in docs/upstream-sync.md.
+
+Bundled third-party assets (upstream desigma):
+
+  Inter font family  https://rsms.me/inter/
+  Licensed under the SIL Open Font License 1.1. Fontsource-fetched families
+  carry their own open licenses, recorded in sidecar files next to each
+  cached font.

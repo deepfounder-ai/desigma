@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# fusion-desigma launcher: applies fusion shell defaults, then execs the upstream
+# desigma binary unmodified. All adaptation is environment + filesystem layout —
+# nothing inside crates/ is changed.
+#
+# Data layout (shell-layer redirect, no code patch):
+#   ~/.fusion-desigma/cache  <- ~/Library/Caches/desigma          (font cache, dirs::cache_dir)
+#   ~/.fusion-desigma/data   <- ~/Library/Application Support/desigma  (settings, crash log, runtime)
+# The launcher creates these as symlinks on first run. Existing real directories
+# are left untouched with a warning (no user data is ever moved or deleted).
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+fusion_base="${HOME}/.fusion-desigma"
+
+mkdir -p "$fusion_base/cache" "$fusion_base/data" "$fusion_base/recent"
+
+link_one() {
+    local target="$1" link="$2"
+    if [ -L "$target" ]; then
+        return 0
+    fi
+    if [ -e "$target" ]; then
+        echo "fusion-desigma: $target exists and is not a symlink; leaving it in place" >&2
+        return 0
+    fi
+    ln -s "$link" "$target"
+    echo "fusion-desigma: linked $target -> $link"
+}
+
+link_one "${HOME}/Library/Caches/desigma" "$fusion_base/cache"
+link_one "${HOME}/Library/Application Support/desigma" "$fusion_base/data"
+
+bin="$root/target/release/desigma"
+if [ ! -x "$bin" ]; then
+    echo "fusion-desigma: $bin not found; build it first with cargo build --release -p desigma-app" >&2
+    exit 1
+fi
+
+echo "fusion-desigma: starting (base dir $fusion_base)"
+exec "$bin" "$@"
