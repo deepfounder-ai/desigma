@@ -48,6 +48,8 @@ fn nothing() -> Command {
 struct Ctx {
     s: Document,
     cmds: Vec<Command>,
+    /// Components that enclose the node `sync_pair` is at.
+    expanding: BTreeSet<NodeId>,
 }
 
 impl Ctx {
@@ -76,6 +78,7 @@ impl Ctx {
                 peer_next: doc.peer_next,
             },
             cmds: Vec::new(),
+            expanding: BTreeSet::new(),
         }
     }
     fn push(&mut self, c: Command) {
@@ -161,6 +164,38 @@ pub fn components_of(doc: &Document, owner: NodeId) -> Vec<NodeId> {
         }
         _ => Vec::new(),
     }
+}
+
+/// The main components `id` sits inside: as a layer of them, or in a copy of them.
+fn enclosing_components(doc: &Document, id: Option<NodeId>) -> BTreeSet<NodeId> {
+    let mut enclosing = BTreeSet::new();
+    let mut cur = id;
+    while let Some(id) = cur {
+        let Some(n) = doc.get(id) else { break };
+        if matches!(n.kind, NodeKind::Component(_)) {
+            enclosing.insert(id);
+        }
+        enclosing.extend(instance_component(n));
+        cur = n.parent;
+    }
+    enclosing
+}
+
+/// True if an instance of `component` placed under `parent` would make a component contain
+/// itself, directly or through the instances nested in it. Syncing such a loop never ends.
+pub fn would_nest_in_itself(doc: &Document, component: NodeId, parent: Option<NodeId>) -> bool {
+    let enclosing = enclosing_components(doc, parent);
+    let mut seen = BTreeSet::new();
+    let mut components = vec![component];
+    while let Some(comp) = components.pop() {
+        if enclosing.contains(&comp) {
+            return true;
+        }
+        if seen.insert(comp) && doc.get(comp).is_some() {
+            components.extend(subtree_ids(doc, comp).iter().filter_map(|id| doc.get(*id).and_then(instance_component)));
+        }
+    }
+    false
 }
 
 /// Nearest ancestor-or-self that is a main `Component`.
@@ -346,7 +381,7 @@ pub fn create_component(doc: &mut Document, node: NodeId) -> Command {
 /// space). The copy mirrors the whole component subtree.
 pub fn create_instance(doc: &mut Document, component: NodeId, parent: NodeId, at: Vec2) -> Command {
     let Some(comp) = doc.get(component).cloned() else { return nothing() };
-    if !matches!(comp.kind, NodeKind::Component(_)) || parent == component || doc.is_ancestor(component, parent) {
+    if !matches!(comp.kind, NodeKind::Component(_)) || would_nest_in_itself(doc, component, Some(parent)) {
         return nothing();
     }
     if !doc.get(parent).map(|p| p.kind.is_container()).unwrap_or(false) {
@@ -535,6 +570,7 @@ fn sync_one(c: &mut Ctx, id: NodeId) {
     let Some(r) = reference_of(&c.s, id) else { return };
     let top = c.s.get(id).map(is_top).unwrap_or(false);
     let holder = holder_of(&c.s, id);
+    c.expanding = enclosing_components(&c.s, c.s.get(id).and_then(|n| n.parent));
     sync_pair(c, r, id, top, holder);
 }
 
@@ -812,6 +848,17 @@ fn sync_pair(c: &mut Ctx, r: NodeId, i: NodeId, top: bool, holder: NodeId) {
     apply_bindings(&mut n, &values);
     c.update(n);
 
+    // A loop can still arrive from a moved layer, a file or two collaborators. Cut it here:
+    // the copy stays empty rather than expanding forever.
+    let mine = c.s.get(i).and_then(instance_component);
+    if mine.is_some_and(|m| c.expanding.contains(&m)) {
+        for k in c.s.get(i).map(|x| x.children.clone()).unwrap_or_default() {
+            c.push(Command::Remove { id: k });
+        }
+        return;
+    }
+    c.expanding.extend(mine);
+
     // --- children ---
     let rkids = c.s.get(ref_id).map(|x| x.children.clone()).unwrap_or_default();
     let ikids = c.s.get(i).map(|x| x.children.clone()).unwrap_or_default();
@@ -851,6 +898,9 @@ fn sync_pair(c: &mut Ctx, r: NodeId, i: NodeId, top: bool, holder: NodeId) {
             c.push(Command::Reparent { id: *id, parent: i, index: k });
         }
     }
+    if let Some(m) = mine {
+        c.expanding.remove(&m);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -865,7 +915,7 @@ pub fn swap_instance(doc: &mut Document, instance: NodeId, new_comp: NodeId) -> 
     if instance_component(n) == Some(new_comp) || !matches!(c.s.get(new_comp).map(|x| &x.kind), Some(NodeKind::Component(_))) {
         return nothing();
     }
-    if new_comp == instance || c.s.is_ancestor(new_comp, instance) {
+    if would_nest_in_itself(&c.s, new_comp, n.parent) {
         return nothing();
     }
     swap_main(&mut c, instance, new_comp);
@@ -1095,6 +1145,10 @@ mod tests {
 
     fn apply(d: &mut Document, c: Command) -> Command {
         c.apply(d).unwrap()
+    }
+
+    fn is_noop(c: &Command) -> bool {
+        matches!(c, Command::Batch(v) if v.is_empty())
     }
 
     fn fx() -> Fx {
@@ -1588,6 +1642,90 @@ mod tests {
         assert_eq!(copy[0].component.source, Some(f.comp));
         assert!(copy.iter().skip(1).all(|n| n.component.source.is_some()));
         assert_eq!(copy.len(), 4);
+    }
+
+    fn two_components(d: &mut Document, page: NodeId) -> (NodeId, NodeId) {
+        let mut make = |name: &str, x: f32| {
+            let id = d.alloc_id();
+            let f = d.insert(page, Node::frame(id, Rect::new(x, 0.0, 100.0, 40.0))).unwrap();
+            d.get_mut(f).unwrap().name = name.into();
+            let c = create_component(d, f);
+            apply(d, c);
+            f
+        };
+        (make("A", 0.0), make("B", 200.0))
+    }
+
+    #[test]
+    fn mutually_nested_instances_are_refused() {
+        let mut d = Document::new("t");
+        let page = d.add_page("P");
+        let (a, b) = two_components(&mut d, page);
+        let c = create_instance(&mut d, b, a, Vec2::ZERO);
+        assert!(!is_noop(&c), "B inside A is fine");
+        apply(&mut d, c);
+        assert!(is_noop(&create_instance(&mut d, a, b, Vec2::ZERO)), "A inside B would contain itself");
+        // Through a third component as well.
+        let id = d.alloc_id();
+        let f = d.insert(page, Node::frame(id, Rect::new(400.0, 0.0, 100.0, 40.0))).unwrap();
+        let cc = create_component(&mut d, f);
+        apply(&mut d, cc);
+        let c = create_instance(&mut d, a, f, Vec2::ZERO);
+        apply(&mut d, c);
+        assert!(is_noop(&create_instance(&mut d, f, b, Vec2::ZERO)), "B is reachable from the new component");
+        // Swapping an instance inside B to A closes the same loop.
+        let c = create_instance(&mut d, f, page, Vec2::ZERO);
+        apply(&mut d, c);
+        let id = d.alloc_id();
+        let g = d.insert(page, Node::frame(id, Rect::new(600.0, 0.0, 100.0, 40.0))).unwrap();
+        let cc = create_component(&mut d, g);
+        apply(&mut d, cc);
+        let c = create_instance(&mut d, g, b, Vec2::ZERO);
+        apply(&mut d, c);
+        let inside_b = *d.get(b).unwrap().children.last().unwrap();
+        assert!(is_noop(&swap_instance(&mut d, inside_b, a)), "swap would put A inside B");
+        // The same component twice is not a cycle.
+        let c = create_instance(&mut d, g, a, Vec2::ZERO);
+        assert!(!is_noop(&c));
+        // Nor is swapping a loose instance of B to A, which contains B.
+        let c = create_instance(&mut d, b, page, Vec2::ZERO);
+        apply(&mut d, c);
+        let loose = *d.get(page).unwrap().children.last().unwrap();
+        assert!(!is_noop(&swap_instance(&mut d, loose, a)));
+    }
+
+    /// A loop can still arrive from a moved layer, a file or two collaborators: syncing it
+    /// must stop, stay bounded and settle rather than overflow the stack.
+    #[test]
+    fn sync_survives_a_component_loop_that_already_exists() {
+        let mut d = Document::new("t");
+        let page = d.add_page("P");
+        let (a, b) = two_components(&mut d, page);
+        let id = d.alloc_id();
+        let mut r = Node::rectangle(id, Rect::new(0.0, 0.0, 10.0, 10.0));
+        r.name = "keep".into();
+        d.insert(a, r).unwrap();
+        let c = create_instance(&mut d, b, a, Vec2::ZERO);
+        apply(&mut d, c);
+        let c = create_instance(&mut d, a, page, Vec2::ZERO);
+        apply(&mut d, c);
+        let loose = *d.get(page).unwrap().children.last().unwrap();
+        apply(&mut d, Command::Reparent { id: loose, parent: b, index: 0 });
+
+        let mut sizes = Vec::new();
+        for _ in 0..8 {
+            for owner in [a, b] {
+                let c = sync_instances(&mut d, owner);
+                apply(&mut d, c);
+            }
+            sizes.push(d.nodes.len());
+        }
+        assert_eq!(sizes[6], sizes[7], "repeated syncs settle: {sizes:?}");
+        assert!(sizes[7] < 60, "the expansion stays small: {sizes:?}");
+        let c = sync_instances(&mut d, a);
+        let c2 = sync_instances(&mut d, b);
+        assert!(is_noop(&c) && is_noop(&c2), "a settled loop has nothing left to sync");
+        assert!(d.get(a).unwrap().children.iter().any(|k| d.get(*k).unwrap().name == "keep"), "main components keep their own layers");
     }
 
     #[test]
