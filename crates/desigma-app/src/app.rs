@@ -310,7 +310,7 @@ impl App {
 
     pub fn title(&self) -> String {
         let name = if self.doc.name.is_empty() { "Untitled" } else { &self.doc.name };
-        format!("{name} - {}", theme::APP_TITLE)
+        format!("{name} - {}", theme::display_title())
     }
 }
 

@@ -155,7 +155,7 @@ fn main() {
     let (w, h) = opts.size.unwrap_or((theme::DEFAULT_WINDOW.0 as u32, theme::DEFAULT_WINDOW.1 as u32));
     let screenshot_mode = opts.screenshot.is_some();
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title(theme::APP_TITLE)
+        .with_title(theme::display_title())
         .with_inner_size([w as f32, h as f32])
         .with_min_inner_size([theme::MIN_WINDOW.0, theme::MIN_WINDOW.1]);
     if let Some(icon) = window_icon() {

@@ -722,7 +722,7 @@ impl Shell {
     }
 
     fn sync_title(&mut self, ctx: &Context) {
-        let title = if self.app.home.is_some() { theme::APP_TITLE.to_string() } else { self.app.title() };
+        let title = if self.app.home.is_some() { theme::display_title().to_string() } else { self.app.title() };
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
