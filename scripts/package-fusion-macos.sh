@@ -37,7 +37,10 @@ fusion_tarball="$dist/fusion-desigma-$version-macos-universal.tar.gz"
 
 rebrand_app() {
     # Renames $1/desigma.app -> $1/fusion-desigma.app and applies the fusion display name.
-    local dir="$1" app="$dir/desigma.app"
+    # Separate `local` statements: in bash 3.2 (macOS / CI runners) a single
+    # declaration line expands $dir before the first assignment lands (set -u).
+    local dir="$1"
+    local app="$dir/desigma.app"
     mv "$app" "$dir/fusion-desigma.app"
     app="$dir/fusion-desigma.app"
     plutil -replace CFBundleName -string fusion-desigma "$app/Contents/Info.plist"
