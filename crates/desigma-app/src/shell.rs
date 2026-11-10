@@ -671,7 +671,12 @@ impl Shell {
         }
         for open in opens {
             match open {
-                crate::instance::Open::Link(link) => self.app.request_open(crate::instance::Open::Link(link)),
+                // `desigma://open` (optionally with a fragment): embedding hosts use it to
+                // hand the running app the foreground; nothing is opened or interpreted.
+                crate::instance::Open::Link(link) if crate::instance::is_open_link(&link) => {}
+                // Not a join or open link: say so instead of dropping it silently (#67).
+                crate::instance::Open::Link(link) if crate::instance::valid_link(&link) => self.app.request_open(crate::instance::Open::Link(link)),
+                crate::instance::Open::Link(link) => self.app.show_toast(crate::instance::unsupported_link_message(&link), true),
                 crate::instance::Open::File(path) => self.app.request_open(crate::instance::Open::File(path)),
             }
         }

@@ -63,6 +63,27 @@ pub fn valid_link(link: &str) -> bool {
         && !link.chars().any(char::is_control)
 }
 
+/// A `desigma://open` link, optionally with a fragment or query (e.g. what an
+/// embedding host appends): hands the running app the foreground only. The
+/// remainder is never interpreted or logged.
+pub fn is_open_link(link: &str) -> bool {
+    if link.len() > MAX_LINE || link.chars().any(char::is_control) {
+        return false;
+    }
+    if !link.get(..14).is_some_and(|p| p.eq_ignore_ascii_case("desigma://open")) {
+        return false;
+    }
+    let rest = &link[14..];
+    rest.is_empty() || rest.starts_with('#') || rest.starts_with('?')
+}
+
+/// Human-readable rejection for a `desigma://` link that is neither a join
+/// link nor an open link, capped so a hostile URL cannot flood the toast.
+pub fn unsupported_link_message(link: &str) -> String {
+    let cleaned: String = link.chars().filter(|c| !c.is_control()).take(80).collect();
+    format!("Unsupported link: {cleaned}")
+}
+
 /// Checks the token and parses one protocol line (without its newline).
 fn parse_line(line: &str, token: &str) -> Result<Request, &'static str> {
     if line.len() >= MAX_LINE {
@@ -76,7 +97,7 @@ fn parse_line(line: &str, token: &str) -> Result<Request, &'static str> {
         return Ok(Request::Ping);
     }
     if let Some(link) = rest.strip_prefix("open-link ") {
-        return if valid_link(link) { Ok(Request::Open(Open::Link(link.to_string()))) } else { Err("not a desigma link") };
+        return if valid_link(link) || is_open_link(link) { Ok(Request::Open(Open::Link(link.to_string()))) } else { Err("not a desigma link") };
     }
     if let Some(path) = rest.strip_prefix("open-file ") {
         let path = Path::new(path);
@@ -237,7 +258,7 @@ fn send(d: &Discovery, command: &str) -> bool {
 pub fn forward(dir: &Path, open: &Open) -> bool {
     let Some(d) = read_discovery(dir) else { return false };
     match open {
-        Open::Link(l) if valid_link(l) => send(&d, &format!("open-link {l}")),
+        Open::Link(l) if valid_link(l) || is_open_link(l) => send(&d, &format!("open-link {l}")),
         Open::File(p) => {
             // the running editor has another working directory
             let Ok(abs) = std::path::absolute(p) else { return false };
@@ -273,10 +294,29 @@ mod tests {
     fn links_are_case_insensitive_and_files_must_be_absolute() {
         assert!(valid_link("DESIGMA://join/abc"));
         assert!(!valid_link("desigma://open/abc"));
+        assert!(is_open_link("desigma://open"));
+        assert!(is_open_link("DESIGMA://OPEN#identity_token=abc"));
+        assert!(is_open_link("desigma://open?from=shell"));
+        assert!(!is_open_link("desigma://openx"));
+        assert!(!is_open_link("desigma://open/abc"));
+        assert!(!is_open_link("desigma://join/abc"));
+        assert!(!is_open_link(&format!("desigma://open#{}", "a".repeat(MAX_LINE))));
+        assert_eq!(parse_line("tok open-link desigma://open", "tok"), Ok(Request::Open(Open::Link("desigma://open".into()))));
+        assert_eq!(parse_line("tok open-link desigma://open#frag", "tok"), Ok(Request::Open(Open::Link("desigma://open#frag".into()))));
+        assert_eq!(parse_line("tok open-link desigma://openx", "tok"), Err("not a desigma link"));
         assert!(!valid_link("desigma://"));
         let abs = std::env::temp_dir().join("a b.desigma");
         assert_eq!(parse_line(&format!("tok open-file {}", abs.display()), "tok"), Ok(Request::Open(Open::File(abs))));
         assert_eq!(parse_line("tok open-file relative.desigma", "tok"), Err("not an absolute path"));
+    }
+
+    #[test]
+    fn unsupported_link_messages_are_sanitized_and_capped() {
+        assert_eq!(unsupported_link_message("desigma://weird/x"), "Unsupported link: desigma://weird/x");
+        let long = format!("desigma://{}", "a".repeat(200));
+        let msg = unsupported_link_message(&long);
+        assert_eq!(msg.chars().count(), "Unsupported link: ".len() + 80);
+        assert_eq!(unsupported_link_message("desigma://a\u{7}b"), "Unsupported link: desigma://ab");
     }
 
     #[test]
@@ -301,6 +341,9 @@ mod tests {
         let file = Open::File(std::env::temp_dir().join("x.desigma"));
         assert!(forward(&dir, &file));
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), file);
+        let open = Open::Link("desigma://open".into());
+        assert!(forward(&dir, &open));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), open);
         // a second editor does not take over
         assert!(Instance::start(&dir, |_| {}).unwrap().is_none());
         drop(inst);
