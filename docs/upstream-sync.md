@@ -78,6 +78,10 @@ git tag -f -a v0.1.0-alpha.17-fusion.1 <commit> && git push origin v0.1.0-alpha.
 gh workflow run release.yml --ref v0.1.0-alpha.17-fusion.1
 ```
 
+Re-dispatching the **same** tag fails at the publish step (the action cannot
+update an existing release: `already_exists`). Delete the release first
+(`gh release delete <tag> --yes`), keep the tag, then dispatch again.
+
 CI (ci.yml) cannot gate pushes here the way it does upstream; run it via
 `gh workflow run ci.yml` after meaningful changes, and rely on the local
 `cargo test --workspace --locked` + `cargo clippy -D warnings` gate anyway.
