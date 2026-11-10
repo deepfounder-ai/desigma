@@ -65,3 +65,19 @@ alpha tags. Sync checklist:
 Fork releases are tagged `<upstream-tag>-fusion.<n>`, e.g.
 `v0.1.0-alpha.17-fusion.1` — the upstream base is visible in the tag itself.
 The `Cargo.toml` version stays upstream-owned and is not bumped in this fork.
+
+## CI on the fork
+
+GitHub does not run push-triggered workflows on this fork (0 runs on any
+push, including tags, even with Actions enabled). Releases are therefore cut
+by dispatching the Release workflow on the tag ref, which also satisfies the
+tag-only publish gate:
+
+```sh
+git tag -f -a v0.1.0-alpha.17-fusion.1 <commit> && git push origin v0.1.0-alpha.17-fusion.1
+gh workflow run release.yml --ref v0.1.0-alpha.17-fusion.1
+```
+
+CI (ci.yml) cannot gate pushes here the way it does upstream; run it via
+`gh workflow run ci.yml` after meaningful changes, and rely on the local
+`cargo test --workspace --locked` + `cargo clippy -D warnings` gate anyway.
