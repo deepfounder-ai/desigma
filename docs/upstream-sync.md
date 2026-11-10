@@ -38,6 +38,7 @@ conflict-free by construction:
 | `start.sh` | supervisor-compatible lifecycle script (start/stop/restart/status/log) |
 | `bin/fusion-desigma` | launcher: fusion defaults, `~/.fusion-desigma` layout |
 | `scripts/package-fusion-macos.sh` | branded macOS packaging wrapper |
+| `.github/workflows/release.yml` | macOS job calls the branded wrapper instead of the upstream packaging script (single-line carried patch; everything else matches upstream) |
 | `docs/fusion-shell.md` | shell-layer architecture and integration notes |
 | `docs/upstream-sync.md` | this policy |
 
