@@ -140,7 +140,11 @@ jobs:
         run: test "$(target/aarch64-apple-darwin/release/desigma --version)" = "desigma ${DESIGMA_VERSION}"
 
       - name: Package desigma.app (.dmg and .tar.gz)
-        run: scripts/package-macos.sh "${{ steps.version.outputs.version }}"
+        # fusion fork (dahai80/fusion-desigma#1): shell-layer wrapper — calls the
+        # upstream script, then rebrands the bundle (CFBundleName/DisplayName) and
+        # renames the artifacts to fusion-desigma-*. The only carried patch in
+        # this workflow; tracked in docs/upstream-sync.md.
+        run: scripts/package-fusion-macos.sh "${{ steps.version.outputs.version }}"
 
       - uses: actions/upload-artifact@v4
         with:
