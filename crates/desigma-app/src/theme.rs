@@ -500,6 +500,26 @@ pub const PRESENT_MAX_SCALE: f32 = 4.0;
 pub const DEFAULT_WINDOW: (f32, f32) = (1600.0, 1088.0);
 pub const MIN_WINDOW: (f32, f32) = (900.0, 600.0);
 pub const APP_TITLE: &str = "desigma";
+
+/// Display title for the window, tab strip and About: `DESIGMA_APP_TITLE` when it is
+/// set to a sane value, [`APP_TITLE`] otherwise. The persistence identity (the
+/// `eframe::run_native` app name) deliberately stays [`APP_TITLE`], so an overridden
+/// title can never fork a user's stored state.
+pub fn display_title() -> &'static str {
+    use std::sync::OnceLock;
+    static TITLE: OnceLock<String> = OnceLock::new();
+    TITLE.get_or_init(|| sanitize_title(&std::env::var("DESIGMA_APP_TITLE").unwrap_or_default()).unwrap_or_else(|| APP_TITLE.to_string()))
+}
+
+/// Accepts a trimmed, printable, 1-64 char title; rejects everything else.
+fn sanitize_title(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() || t.len() > 64 || t.chars().any(char::is_control) {
+        return None;
+    }
+    Some(t.to_string())
+}
+
 pub const DEFAULT_SHAPE_SIZE: f32 = 100.0;
 pub const DEFAULT_TEXT_SIZE: f32 = 16.0;
 pub const DEFAULT_PAGE_BG: u32 = 0xF5F5F5;
@@ -725,3 +745,19 @@ pub const BOARD_BAR_GAP: f32 = 12.0;
 pub const BOARD_BAR_BTN: f32 = 28.0;
 pub const BOARD_SWATCH: f32 = 18.0;
 pub const BOARD_BAR_SEP: f32 = 8.0;
+
+#[cfg(test)]
+mod title_tests {
+    use super::sanitize_title;
+
+    #[test]
+    fn titles_must_be_printable_bounded_text() {
+        assert_eq!(sanitize_title(" fusion-desigma "), Some("fusion-desigma".to_string()));
+        assert_eq!(sanitize_title(""), None);
+        assert_eq!(sanitize_title("   "), None);
+        assert_eq!(sanitize_title("desigma\u{7}"), None);
+        assert_eq!(sanitize_title(&"x".repeat(65)), None);
+        let long = "x".repeat(64);
+        assert_eq!(sanitize_title(&long).as_deref(), Some(long.as_str()));
+    }
+}

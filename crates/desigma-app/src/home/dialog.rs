@@ -172,7 +172,7 @@ impl App {
 
     pub fn show_about(&mut self) {
         let mut lines = vec![
-            ("desigma is a free, open-source design editor written in Rust.".to_string(), String::new()),
+            (format!("{} is a free, open-source design editor written in Rust.", crate::theme::display_title()), String::new()),
             (
                 if crate::RELEASE_BUILD {
                     format!("Version {}", crate::VERSION)
@@ -186,7 +186,7 @@ impl App {
         if let Some(lib) = &self.lib {
             lines.push((format!("Library: {}", lib.root().display()), String::new()));
         }
-        self.dialog = Some(Dialog::info(Intent::About, "About desigma", lines));
+        self.dialog = Some(Dialog::info(Intent::About, &format!("About {}", crate::theme::display_title()), lines));
     }
 
     pub fn confirm_open_github(&mut self) {
