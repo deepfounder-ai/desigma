@@ -50,14 +50,18 @@ rebrand_app() {
     codesign --verify --deep --strict "$app"
 }
 
-# 2. DMG: attach, rebrand in place, repack.
+# 2. DMG: the upstream image is UDZO (compressed), which mounts read-only, so copy
+# the volume out to a writable stage, rebrand there and build a fresh image.
 log "rebranding $upstream_dmg"
 mount=$(mktemp -d)
 hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$upstream_dmg" >/dev/null
-rebrand_app "$mount"
-rm -f "$fusion_dmg"
-hdiutil create -volname fusion-desigma -srcfolder "$mount" -ov -format UDZO "$fusion_dmg" >/dev/null
+stage=$(mktemp -d)
+cp -R "$mount/" "$stage/"
 hdiutil detach "$mount" >/dev/null
+rebrand_app "$stage"
+rm -f "$fusion_dmg"
+hdiutil create -volname fusion-desigma -srcfolder "$stage" -ov -format UDZO "$fusion_dmg" >/dev/null
+rm -rf "$stage"
 rm -f "$upstream_dmg"
 
 # 3. tar.gz: extract, rebrand, repack.
