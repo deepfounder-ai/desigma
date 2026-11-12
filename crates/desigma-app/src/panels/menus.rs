@@ -222,7 +222,7 @@ pub fn run(app: &mut App, ctx: &Context, a: Action) {
             app.ui.menu = Some(MenuKind::Palette);
             app.ui.menu_anchor = None;
         }
-        Action::About => app.show_toast(format!("{}, a Figma-compatible design editor", crate::theme::display_title()), false),
+        Action::About => app.show_toast("desigma, a Figma-compatible design editor", false),
         Action::Plugins => app.open_plugins(),
         Action::BackToFiles => app.go_home(),
         Action::SaveToLibrary => app.begin_save_to_library(),
