@@ -793,6 +793,8 @@ fn set_sizing(app: &mut App, sel: &[NodeId], horizontal: bool, s: Sizing) {
             } else if t.auto_resize != TextAutoResize::None {
                 t.auto_resize = TextAutoResize::None;
             }
+            // Hug takes effect now, not at the next text edit (#71).
+            n.size = crate::layout::fit_text(t, n.size);
         }
     });
 }
@@ -1570,5 +1572,31 @@ mod tests {
         n.kind = NodeKind::Frame(FrameProps { auto_layout: Some(AutoLayout { primary_sizing: Sizing::Hug, ..Default::default() }), ..Default::default() });
         assert_eq!(sizing_of(&n, true), Sizing::Hug);
         assert_eq!(sizing_of(&n, false), Sizing::Fixed);
+    }
+
+    /// Switching a text's height to Hug fits the box to its wrapped lines at once (#71).
+    #[test]
+    fn hug_height_fits_a_text_box_to_its_lines() {
+        let mut d = Document::new("t");
+        let page = d.add_page("P");
+        let id = d.alloc_id();
+        let mut t = Node::text(
+            id,
+            desigma_doc::Rect::new(0.0, 0.0, 120.0, 20.0),
+            "one two three four five six seven eight nine ten eleven twelve",
+            TextStyle::default(),
+        );
+        if let NodeKind::Text(p) = &mut t.kind {
+            p.auto_resize = TextAutoResize::None;
+        }
+        let id = d.insert(page, t).unwrap();
+        let mut app = App::new(d);
+        set_sizing(&mut app, &[id], false, Sizing::Hug);
+        let n = app.doc.get(id).unwrap();
+        assert_eq!(n.size.x, 120.0, "width stays fixed");
+        assert!(n.size.y > 40.0, "height grows to the wrapped lines: {}", n.size.y);
+        let hugged = n.size.y;
+        set_sizing(&mut app, &[id], false, Sizing::Fixed);
+        assert_eq!(app.doc.get(id).unwrap().size.y, hugged, "back to fixed keeps the size");
     }
 }

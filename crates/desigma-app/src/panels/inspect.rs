@@ -445,10 +445,11 @@ pub fn measure(a: Rect, b: Rect) -> Vec<Gap> {
     out
 }
 
-/// Dev mode: red distance lines between the selection and the hovered layer.
-/// Call after the regular canvas overlays.
+/// Red distance lines between the selection and the hovered layer: always in Dev mode,
+/// and while Alt (Option) is held when designing. Call after the regular canvas overlays.
 pub fn measure_overlay(app: &App, ui: &Ui, rect: Rect) {
-    if !app.ui.dev_mode {
+    let alt = ui.input(|i| i.modifiers.alt) && matches!(app.canvas.inter, crate::canvas::Interaction::None);
+    if !app.ui.dev_mode && !alt {
         return;
     }
     let Some(hover) = app.hover.or(app.hover_layer) else { return };
