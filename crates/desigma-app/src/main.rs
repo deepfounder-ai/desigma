@@ -2,6 +2,7 @@
 // console programs. Tests keep the console too, so `cargo test --release` can still print.
 #![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
+mod aiimg;
 mod app;
 mod board;
 mod bridge;

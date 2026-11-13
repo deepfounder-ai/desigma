@@ -64,6 +64,10 @@ pub struct Node {
     /// everything else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brush: Option<Brush>,
+    /// The pictures AI generations gave this layer, oldest first, so an earlier one can be
+    /// brought back; empty for everything else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_versions: Vec<AiVersion>,
     /// Motion keyframe tracks and clips; empty for nodes that are not animated.
     #[serde(default, skip_serializing_if = "NodeMotion::is_empty")]
     pub motion: NodeMotion,
@@ -149,6 +153,15 @@ impl ComponentLink {
     }
 }
 
+/// One picture in a layer's AI history: the image it showed and the prompt that made it
+/// (empty for the picture the layer had before the first generation).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AiVersion {
+    pub image_ref: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt: String,
+}
+
 impl Node {
     pub fn new(id: NodeId, kind: NodeKind) -> Self {
         Self {
@@ -182,6 +195,7 @@ impl Node {
             dev: DevInfo::default(),
             slide: None,
             brush: None,
+            ai_versions: Vec::new(),
             motion: NodeMotion::default(),
         }
     }

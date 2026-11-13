@@ -270,6 +270,7 @@ impl Shell {
             Some("version-history") => crate::history::preset::apply(&mut app, opts.library.clone()),
             Some(p @ ("motion-inspector" | "motion-easing" | "motion-library" | "motion-clip")) => crate::motion::inspector::preset(&mut app, p),
             Some(p @ ("dev-annotate" | "dev-compare")) => crate::dev::preset::panel(&mut app, p),
+            Some(p @ ("ai-settings" | "ai-generate" | "ai-edit" | "ai-running")) => crate::aiimg::preset(&mut app, ctx, p),
             Some("share") => app.open_share(),
             Some("collab") => crate::collab::preview(&mut app),
             Some(p @ ("updater" | "updater-banner")) => crate::updater::preset(&mut app, p),
@@ -649,6 +650,7 @@ impl eframe::App for Shell {
         self.app.poll_bridge();
         self.handle_opens(ctx);
         crate::collab::pump(&mut self.app, ctx);
+        crate::aiimg::pump(&mut self.app);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -744,6 +746,8 @@ impl Shell {
         crate::collab::ui::join_dialog(&mut self.app, ctx);
         crate::unsaved::dialog(&mut self.app, ctx);
         crate::extwatch::dialog(&mut self.app, ctx);
+        crate::aiimg::ui::settings_dialog(&mut self.app, ctx);
+        crate::aiimg::ui::prompt_dialog(&mut self.app, ctx);
         let full = ui.max_rect();
         self.toast(ui, full);
         self.sync_title(ctx);
@@ -880,6 +884,8 @@ impl Shell {
         crate::collab::ui::join_dialog(&mut self.app, &ctx);
         crate::unsaved::dialog(&mut self.app, &ctx);
         crate::extwatch::dialog(&mut self.app, &ctx);
+        crate::aiimg::ui::settings_dialog(&mut self.app, &ctx);
+        crate::aiimg::ui::prompt_dialog(&mut self.app, &ctx);
         self.toast(ui, full);
 
         self.sync_title(&ctx);

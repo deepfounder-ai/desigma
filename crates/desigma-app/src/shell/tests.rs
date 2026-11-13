@@ -934,6 +934,7 @@ fn layout_guide_section_edits_the_grids_of_a_frame() {
     }
 }
 
+mod aiimg;
 mod board;
 mod board_blocks;
 mod board_home;
