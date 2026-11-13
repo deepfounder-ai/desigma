@@ -1529,6 +1529,7 @@ name = "desigma-mcp"
 version = "0.1.0"
 dependencies = [
  "desigma-doc",
+ "desigma-engine",
  "desigma-export",
  "desigma-library",
  "desigma-svg",

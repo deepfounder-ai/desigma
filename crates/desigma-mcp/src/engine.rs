@@ -27,10 +27,10 @@ pub trait Host {
     fn can_redo(&self) -> bool;
     /// Allocates a fresh node id on the document.
     fn alloc_id(&mut self) -> Result<NodeId, String>;
-    /// Direct document access for content-addressed assets only (bitmap bytes
-    /// carried by an imported SVG). Not recorded by undo, exactly like the
-    /// editor's own SVG import, so callers must apply them together with an
-    /// undoable insert.
+    /// Direct document access for two things undo does not record: the
+    /// content-addressed bitmap bytes an imported SVG carries, and the node id
+    /// reservation the `desigma_doc` component helpers do before they return
+    /// their command. Callers must always follow it with an undoable insert.
     fn doc_mut(&mut self) -> &mut Document;
 }
 
@@ -39,6 +39,9 @@ impl Host for Engine {
         &self.doc
     }
     fn exec(&mut self, cmd: Command) -> Result<(), String> {
+        // Same preparation the editor does before committing: mirrored-node
+        // edits become overrides, main-component edits re-sync their instances.
+        let cmd = desigma_engine::components::prepare(&mut self.doc, cmd);
         self.history.exec(&mut self.doc, cmd).map_err(|e| e.to_string())
     }
     fn undo(&mut self) -> Result<bool, String> {
@@ -79,8 +82,9 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_import_svg",
     "desigma_delete_node",
     "desigma_delete_page",
-    // 本地扩展工具（组件 / 实例 / 页面重命名）：同样改文档，必须登记，
-    // 否则传输层不会标记 dirty、编辑器桥接也不会在用户手势中拦下它们。
+    // Component, instance and page-rename tools also change the document, so a
+    // transport must treat them as edits and the editor bridge must not let
+    // them run mid-gesture.
     "desigma_create_component",
     "desigma_create_instance",
     "desigma_detach_instance",
@@ -212,25 +216,36 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             host.exec(Command::Remove { id })?;
             Ok(json!({"node_id":id,"deleted":true}))
         }
-        // ---- 本地扩展（上游未提供，2026-11-07 按 desigma-doc 现成 API 重挂）----
+        // ---- Components, instances and page rename (thin wrappers over `desigma_doc::components`) ----
         "desigma_create_component" => {
             let a: CreateComponentArgs = parse(args)?;
-            let kind = node(host, a.node_id)?.kind.clone();
-            if !matches!(kind, NodeKind::Frame(_) | NodeKind::Group | NodeKind::Section) {
+            let target = node(host, a.node_id)?.clone();
+            if !matches!(target.kind, NodeKind::Frame(_) | NodeKind::Group | NodeKind::Section) {
                 return Err("only frame / group / section layers can become a component".into());
             }
-            let cmd = desigma_doc::create_component(host.doc_mut(), NodeId(a.node_id));
-            host.exec(cmd)?;
-            if let Some(name) = a.name {
-                bounded_text("name", &name, 1024)?;
-                let mut n = host.doc().get(NodeId(a.node_id)).cloned().ok_or("component vanished")?;
-                n.name = name;
-                host.exec(Command::Update { node: Box::new(n) })?;
+            if target.component.source.is_some() {
+                return Err("a mirrored layer inside an instance cannot become a component; detach the instance first".into());
             }
+            // Validate the name before converting, so a refused name leaves the layer as it was.
+            if let Some(name) = &a.name {
+                bounded_text("name", name, 1024)?;
+            }
+            let mut cmd = desigma_doc::create_component(host.doc_mut(), NodeId(a.node_id));
+            if let Some(name) = a.name {
+                // These kinds convert in place, so the rename joins the same undo step.
+                let Command::Update { node } = &mut cmd else {
+                    return Err("layer did not convert in place".into());
+                };
+                node.name = name;
+            }
+            host.exec(cmd)?;
             Ok(json!({"component_id":a.node_id,"node":host.doc().get(NodeId(a.node_id))}))
         }
         "desigma_create_instance" => {
             let a: CreateInstanceArgs = parse(args)?;
+            if node(host, a.parent_id)?.component.source.is_some() {
+                return Err("a mirrored layer inside an instance cannot receive an instance; detach the instance first".into());
+            }
             let at = desigma_doc::Vec2::new(a.x, a.y);
             let cmd = desigma_doc::create_instance(host.doc_mut(), NodeId(a.component_id), NodeId(a.parent_id), at);
             let instance_id = match &cmd {
@@ -260,20 +275,29 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
                 return Err(format!("node {} is not a main component or component set", a.component_id));
             }
             let cmd = desigma_doc::sync_instances(host.doc_mut(), NodeId(a.component_id));
+            // Nothing to follow: executing an empty batch would push an empty undo
+            // step and mark the session dirty, so report it as unchanged.
+            if is_noop(&cmd) {
+                return Ok(json!({"component_id":a.component_id,"synced":true,"changed":false}));
+            }
             host.exec(cmd)?;
-            Ok(json!({"component_id":a.component_id,"synced":true}))
+            Ok(json!({"component_id":a.component_id,"synced":true,"changed":true}))
         }
         "desigma_rename_page" => {
             let a: RenamePageArgs = parse(args)?;
-            bounded_text("name", &a.name, 1024)?;
+            let name = a.name.trim();
+            if name.is_empty() {
+                return Err("name must not be empty".into());
+            }
+            bounded_text("name", name, 1024)?;
             let mut page = node(host, a.page_id)?.clone();
             if !matches!(page.kind, NodeKind::Page { .. }) || page.parent.is_some() {
                 return Err(format!("node {} is not a page", a.page_id));
             }
-            page.name = a.name.clone();
-            // 页面根节点同样走 `Command::Update`，因此可撤销（旧本地版是直写模型、不可撤销）。
+            page.name = name.to_string();
+            // Page roots go through `Command::Update` too, so a rename is undoable.
             host.exec(Command::Update { node: Box::new(page) })?;
-            Ok(json!({"page_id":a.page_id,"name":a.name}))
+            Ok(json!({"page_id":a.page_id,"name":name}))
         }
         "desigma_undo" | "desigma_redo" => {
             let _: Empty = parse(args)?;
@@ -696,6 +720,12 @@ fn bounded_text(field: &str, value: &str, max: usize) -> Result<(), String> {
         Ok(())
     }
 }
+
+/// `true` when `cmd` has nothing to apply, as an empty batch coming out of the
+/// component helpers does.
+fn is_noop(cmd: &Command) -> bool {
+    matches!(cmd, Command::Batch(v) if v.is_empty())
+}
 fn geometry(x: f32, y: f32, width: f32, height: f32) -> Result<(), String> {
     if [x, y, width, height].iter().any(|v| !v.is_finite() || v.abs() > 1_000_000.0) {
         return Err("geometry must be finite and within +/-1000000".into());
@@ -819,7 +849,7 @@ struct CreateComponentArgs {
 #[serde(deny_unknown_fields)]
 struct CreateInstanceArgs {
     component_id: u64,
-    /// Container that receives the instance (frame, group or section).
+    /// Container that receives the instance (frame, group, section or page).
     parent_id: u64,
     #[serde(default)]
     x: f32,
@@ -1010,7 +1040,7 @@ pub fn tools() -> Vec<Value> {
         false,
         false,
     );
-    // ---- 本地扩展：组件 / 实例 / 页面重命名（上游未提供）----
+    // ---- Components, instances and page rename ----
     add(
         "create_component",
         "Turn a frame / group / section layer into a main component in place, optionally renaming it. Supports undo; changes remain in memory until saved.",
@@ -1021,9 +1051,9 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "create_instance",
-        "Place an instance of a main component inside another container (frame, group or section; a page is not a container). Supports undo; changes remain in memory until saved.",
+        "Place an instance of a main component inside another container (frame, group, section or page). Supports undo; changes remain in memory until saved.",
         json!({"component_id":id,"parent_id":id,"x":coordinate,"y":coordinate}),
-        vec!["component_id","parent_id"],
+        vec!["component_id", "parent_id"],
         false,
         false,
     );

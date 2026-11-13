@@ -91,6 +91,28 @@ pub fn record_overrides(doc: &Document, before: &BTreeMap<NodeId, Node>, cmds: &
     }
 }
 
+/// Records overrides for every `Update` in `cmd`, batches included.
+fn record_overrides_deep(doc: &Document, before: &BTreeMap<NodeId, Node>, cmd: &mut Command) {
+    match cmd {
+        Command::Batch(items) => items.iter_mut().for_each(|c| record_overrides_deep(doc, before, c)),
+        one => record_overrides(doc, before, std::slice::from_mut(one)),
+    }
+}
+
+/// Prepares one command the way the editor commits an edit: a change to a
+/// mirrored node becomes an override on it (against `before`, the pre-edit
+/// state of the nodes the command touches) and a change to a main component
+/// re-syncs its instances, all in the same undo step. Hosts that call
+/// [`desigma_doc::History::exec`] directly would lose both.
+pub fn prepare(doc: &mut Document, cmd: Command) -> Command {
+    let mut ids = Vec::new();
+    ids_of(doc, &cmd, &mut ids);
+    let before: BTreeMap<NodeId, Node> = ids.iter().filter_map(|id| doc.get(*id).map(|n| (*id, n.clone()))).collect();
+    let mut cmd = cmd;
+    record_overrides_deep(doc, &before, &mut cmd);
+    with_sync(doc, cmd)
+}
+
 /// Wraps `cmd` so that editing a main component also re-syncs its instances in
 /// the same undo step. Cascades through components nested in other components.
 pub fn with_sync(doc: &mut Document, cmd: Command) -> Command {
