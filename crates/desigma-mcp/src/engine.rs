@@ -27,10 +27,10 @@ pub trait Host {
     fn can_redo(&self) -> bool;
     /// Allocates a fresh node id on the document.
     fn alloc_id(&mut self) -> Result<NodeId, String>;
-    /// Direct document access for content-addressed assets only (bitmap bytes
-    /// carried by an imported SVG). Not recorded by undo, exactly like the
-    /// editor's own SVG import, so callers must apply them together with an
-    /// undoable insert.
+    /// Direct document access for two things undo does not record: the
+    /// content-addressed bitmap bytes an imported SVG carries, and the node id
+    /// reservation the `desigma_doc` component helpers do before they return
+    /// their command. Callers must always follow it with an undoable insert.
     fn doc_mut(&mut self) -> &mut Document;
 }
 
@@ -39,6 +39,9 @@ impl Host for Engine {
         &self.doc
     }
     fn exec(&mut self, cmd: Command) -> Result<(), String> {
+        // Same preparation the editor does before committing: mirrored-node
+        // edits become overrides, main-component edits re-sync their instances.
+        let cmd = desigma_engine::components::prepare(&mut self.doc, cmd);
         self.history.exec(&mut self.doc, cmd).map_err(|e| e.to_string())
     }
     fn undo(&mut self) -> Result<bool, String> {
@@ -79,6 +82,14 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_import_svg",
     "desigma_delete_node",
     "desigma_delete_page",
+    // Component, instance and page-rename tools also change the document, so a
+    // transport must treat them as edits and the editor bridge must not let
+    // them run mid-gesture.
+    "desigma_create_component",
+    "desigma_create_instance",
+    "desigma_detach_instance",
+    "desigma_sync_instances",
+    "desigma_rename_page",
     "desigma_undo",
     "desigma_redo",
     "desigma_add_keyframe",
@@ -204,6 +215,89 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             let id = n.id;
             host.exec(Command::Remove { id })?;
             Ok(json!({"node_id":id,"deleted":true}))
+        }
+        // ---- Components, instances and page rename (thin wrappers over `desigma_doc::components`) ----
+        "desigma_create_component" => {
+            let a: CreateComponentArgs = parse(args)?;
+            let target = node(host, a.node_id)?.clone();
+            if !matches!(target.kind, NodeKind::Frame(_) | NodeKind::Group | NodeKind::Section) {
+                return Err("only frame / group / section layers can become a component".into());
+            }
+            if target.component.source.is_some() {
+                return Err("a mirrored layer inside an instance cannot become a component; detach the instance first".into());
+            }
+            // Validate the name before converting, so a refused name leaves the layer as it was.
+            if let Some(name) = &a.name {
+                bounded_text("name", name, 1024)?;
+            }
+            let mut cmd = desigma_doc::create_component(host.doc_mut(), NodeId(a.node_id));
+            if let Some(name) = a.name {
+                // These kinds convert in place, so the rename joins the same undo step.
+                let Command::Update { node } = &mut cmd else {
+                    return Err("layer did not convert in place".into());
+                };
+                node.name = name;
+            }
+            host.exec(cmd)?;
+            Ok(json!({"component_id":a.node_id,"node":host.doc().get(NodeId(a.node_id))}))
+        }
+        "desigma_create_instance" => {
+            let a: CreateInstanceArgs = parse(args)?;
+            if node(host, a.parent_id)?.component.source.is_some() {
+                return Err("a mirrored layer inside an instance cannot receive an instance; detach the instance first".into());
+            }
+            let at = desigma_doc::Vec2::new(a.x, a.y);
+            let cmd = desigma_doc::create_instance(host.doc_mut(), NodeId(a.component_id), NodeId(a.parent_id), at);
+            let instance_id = match &cmd {
+                Command::Insert { nodes, .. } => nodes.first().map(|n| n.id.0),
+                _ => None,
+            };
+            let Some(instance_id) = instance_id else {
+                return Err("cannot instantiate: component must be a Component and parent must be a container that does not contain it".into());
+            };
+            host.exec(cmd)?;
+            Ok(json!({"instance_id":instance_id,"component_id":a.component_id}))
+        }
+        "desigma_detach_instance" => {
+            let a: NodeArgs = parse(args)?;
+            let kind = node(host, a.node_id)?.kind.clone();
+            if !matches!(kind, NodeKind::Instance { .. }) {
+                return Err("only instances can be detached".into());
+            }
+            let cmd = desigma_doc::detach_instance(host.doc_mut(), NodeId(a.node_id));
+            host.exec(cmd)?;
+            Ok(json!({"node_id":a.node_id,"detached":true}))
+        }
+        "desigma_sync_instances" => {
+            let a: SyncArgs = parse(args)?;
+            let kind = node(host, a.component_id)?.kind.clone();
+            if !matches!(kind, NodeKind::Component(_) | NodeKind::ComponentSet(_)) {
+                return Err(format!("node {} is not a main component or component set", a.component_id));
+            }
+            let cmd = desigma_doc::sync_instances(host.doc_mut(), NodeId(a.component_id));
+            // Nothing to follow: executing an empty batch would push an empty undo
+            // step and mark the session dirty, so report it as unchanged.
+            if is_noop(&cmd) {
+                return Ok(json!({"component_id":a.component_id,"synced":true,"changed":false}));
+            }
+            host.exec(cmd)?;
+            Ok(json!({"component_id":a.component_id,"synced":true,"changed":true}))
+        }
+        "desigma_rename_page" => {
+            let a: RenamePageArgs = parse(args)?;
+            let name = a.name.trim();
+            if name.is_empty() {
+                return Err("name must not be empty".into());
+            }
+            bounded_text("name", name, 1024)?;
+            let mut page = node(host, a.page_id)?.clone();
+            if !matches!(page.kind, NodeKind::Page { .. }) || page.parent.is_some() {
+                return Err(format!("node {} is not a page", a.page_id));
+            }
+            page.name = name.to_string();
+            // Page roots go through `Command::Update` too, so a rename is undoable.
+            host.exec(Command::Update { node: Box::new(page) })?;
+            Ok(json!({"page_id":a.page_id,"name":name}))
         }
         "desigma_undo" | "desigma_redo" => {
             let _: Empty = parse(args)?;
@@ -626,6 +720,12 @@ fn bounded_text(field: &str, value: &str, max: usize) -> Result<(), String> {
         Ok(())
     }
 }
+
+/// `true` when `cmd` has nothing to apply, as an empty batch coming out of the
+/// component helpers does.
+fn is_noop(cmd: &Command) -> bool {
+    matches!(cmd, Command::Batch(v) if v.is_empty())
+}
 fn geometry(x: f32, y: f32, width: f32, height: f32) -> Result<(), String> {
     if [x, y, width, height].iter().any(|v| !v.is_finite() || v.abs() > 1_000_000.0) {
         return Err("geometry must be finite and within +/-1000000".into());
@@ -735,6 +835,39 @@ struct TextStyleArgs {
     align_h: Option<String>,
     /// top | center | bottom
     align_v: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateComponentArgs {
+    node_id: u64,
+    /// Main component name; the layer keeps its own name when omitted.
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateInstanceArgs {
+    component_id: u64,
+    /// Container that receives the instance (frame, group, section or page).
+    parent_id: u64,
+    #[serde(default)]
+    x: f32,
+    #[serde(default)]
+    y: f32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyncArgs {
+    component_id: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenamePageArgs {
+    page_id: u64,
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -906,6 +1039,47 @@ pub fn tools() -> Vec<Value> {
         vec!["node_id"],
         false,
         false,
+    );
+    // ---- Components, instances and page rename ----
+    add(
+        "create_component",
+        "Turn a frame / group / section layer into a main component in place, optionally renaming it. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id,"name":name}),
+        vec!["node_id"],
+        false,
+        false,
+    );
+    add(
+        "create_instance",
+        "Place an instance of a main component inside another container (frame, group, section or page). Supports undo; changes remain in memory until saved.",
+        json!({"component_id":id,"parent_id":id,"x":coordinate,"y":coordinate}),
+        vec!["component_id", "parent_id"],
+        false,
+        false,
+    );
+    add(
+        "detach_instance",
+        "Detach an instance in place: its mirrored subtree becomes ordinary layers. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id}),
+        vec!["node_id"],
+        false,
+        false,
+    );
+    add(
+        "sync_instances",
+        "Re-apply a main component's current state to every instance of it (needed after editing a component in a way that does not sync, e.g. set_appearance). Supports undo; changes remain in memory until saved.",
+        json!({"component_id":id}),
+        vec!["component_id"],
+        false,
+        true,
+    );
+    add(
+        "rename_page",
+        "Rename a page; page roots cannot be renamed with update_node. Supports undo; changes remain in memory until saved.",
+        json!({"page_id":id,"name":{"type":"string","minLength":1,"maxLength":1024}}),
+        vec!["page_id", "name"],
+        false,
+        true,
     );
     add("undo", "Undo the latest successful edit; returns changed=false if the stack is empty. In the editor the stack is shared with the user, so this may undo their latest edit.", json!({}), vec![], false, false);
     add(

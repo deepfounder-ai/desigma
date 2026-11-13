@@ -104,7 +104,7 @@ Turn the bridge on in **Preferences → Allow MCP agents to control this editor*
 
 The server shares Desigma's importers, document types, variables, undo commands, and exporters. Code generation resolves bound variable values. Import and generated-code fidelity follow the underlying Desigma implementations; generated source is a handoff starting point.
 
-In an isolated file session, layer edits do not run the desktop application's auto-layout reflow, text measurement, connector rerouting, or component-instance synchronization; do not assume that resizing a container rearranges its children or that editing a component updates every instance. With the agent bridge on, edits run through the editor's transactions and are laid out like the editor's own edits (auto-layout reflow, group fit, connector rerouting, component-instance sync). Editing token definitions or arbitrary paint properties is not exposed in this version.
+In an isolated file session, layer edits do not run the desktop application's auto-layout reflow, text measurement or connector rerouting, so do not assume that resizing a container rearranges its children. Component edits do follow the editor's rules: a change to a layer inside an instance is recorded as an override on that layer, and a change to a main component re-syncs its instances, both in the same undo step. With the agent bridge on, edits run through the editor's transactions and are laid out like the editor's own edits (auto-layout reflow, group fit, connector rerouting, component-instance sync). Editing token definitions or arbitrary paint properties is not exposed in this version.
 
 ## Verification and evaluation
 
