@@ -1,0 +1,795 @@
+{
+  "name": "Button kit",
+  "kind": "Design",
+  "nodes": {
+    "1": {
+      "id": 1,
+      "source_id": null,
+      "name": "Buttons",
+      "kind": {
+        "Page": {
+          "background": {
+            "r": 0.9607843,
+            "g": 0.9607843,
+            "b": 0.9607843,
+            "a": 1.0
+          }
+        }
+      },
+      "parent": null,
+      "children": [
+        2,
+        4
+      ],
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "blend": "PassThrough",
+      "transform": {
+        "a": 1.0,
+        "b": 0.0,
+        "c": 0.0,
+        "d": 1.0,
+        "tx": 0.0,
+        "ty": 0.0
+      },
+      "size": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "fills": [],
+      "stroke": {
+        "paints": [],
+        "weight": 1.0,
+        "side_weights": null,
+        "align": "Inside",
+        "cap": "None",
+        "join": "Miter",
+        "miter_limit": 4.0,
+        "dashes": []
+      },
+      "effects": [],
+      "corner_radii": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "corner_smoothing": 0.0,
+      "constraints": {
+        "horizontal": "Min",
+        "vertical": "Min"
+      },
+      "layout_child": {
+        "absolute": false,
+        "horizontal": "Fixed",
+        "vertical": "Fixed",
+        "grow": 0.0,
+        "min_w": null,
+        "max_w": null,
+        "min_h": null,
+        "max_h": null
+      },
+      "is_mask": false,
+      "style_refs": {},
+      "fill_geometry": null,
+      "stroke_geometry": null
+    },
+    "2": {
+      "id": 2,
+      "source_id": null,
+      "name": "Button / Primary",
+      "kind": {
+        "Component": {
+          "clips_content": false,
+          "auto_layout": null,
+          "grids": []
+        }
+      },
+      "parent": 1,
+      "children": [
+        3
+      ],
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "blend": "PassThrough",
+      "transform": {
+        "a": 1.0,
+        "b": 0.0,
+        "c": 0.0,
+        "d": 1.0,
+        "tx": 40.0,
+        "ty": 40.0
+      },
+      "size": {
+        "x": 160.0,
+        "y": 44.0
+      },
+      "fills": [
+        {
+          "kind": {
+            "Solid": {
+              "r": 0.14509805,
+              "g": 0.3882353,
+              "b": 0.92156863,
+              "a": 1.0
+            }
+          },
+          "opacity": 1.0,
+          "visible": true,
+          "blend": "Normal"
+        }
+      ],
+      "stroke": {
+        "paints": [],
+        "weight": 1.0,
+        "side_weights": null,
+        "align": "Inside",
+        "cap": "None",
+        "join": "Miter",
+        "miter_limit": 4.0,
+        "dashes": []
+      },
+      "effects": [],
+      "corner_radii": [
+        8.0,
+        8.0,
+        8.0,
+        8.0
+      ],
+      "corner_smoothing": 0.0,
+      "constraints": {
+        "horizontal": "Min",
+        "vertical": "Min"
+      },
+      "layout_child": {
+        "absolute": false,
+        "horizontal": "Fixed",
+        "vertical": "Fixed",
+        "grow": 0.0,
+        "min_w": null,
+        "max_w": null,
+        "min_h": null,
+        "max_h": null
+      },
+      "is_mask": false,
+      "style_refs": {},
+      "fill_geometry": null,
+      "stroke_geometry": null
+    },
+    "3": {
+      "id": 3,
+      "source_id": null,
+      "name": "Label",
+      "kind": {
+        "Text": {
+          "content": "Continue",
+          "style": {
+            "font_family": "Inter",
+            "font_weight": 600,
+            "italic": false,
+            "font_size": 15.0,
+            "line_height": "Auto",
+            "letter_spacing": 0.0,
+            "paragraph_spacing": 0.0,
+            "align_h": "Center",
+            "align_v": "Center",
+            "case": "Original",
+            "decoration": "None",
+            "fills": [
+              {
+                "kind": {
+                  "Solid": {
+                    "r": 1.0,
+                    "g": 1.0,
+                    "b": 1.0,
+                    "a": 1.0
+                  }
+                },
+                "opacity": 1.0,
+                "visible": true,
+                "blend": "Normal"
+              }
+            ],
+            "features": []
+          },
+          "runs": [],
+          "auto_resize": "WidthAndHeight",
+          "max_lines": null,
+          "paragraph": {
+            "indent": 0.0,
+            "list_spacing": 0.0,
+            "hanging_punctuation": false,
+            "hanging_list": false,
+            "leading_trim": "None"
+          },
+          "lists": [],
+          "direction": "Auto"
+        }
+      },
+      "parent": 2,
+      "children": [],
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "blend": "PassThrough",
+      "transform": {
+        "a": 1.0,
+        "b": 0.0,
+        "c": 0.0,
+        "d": 1.0,
+        "tx": 24.0,
+        "ty": 14.0
+      },
+      "size": {
+        "x": 112.0,
+        "y": 16.0
+      },
+      "fills": [],
+      "stroke": {
+        "paints": [],
+        "weight": 1.0,
+        "side_weights": null,
+        "align": "Inside",
+        "cap": "None",
+        "join": "Miter",
+        "miter_limit": 4.0,
+        "dashes": []
+      },
+      "effects": [],
+      "corner_radii": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "corner_smoothing": 0.0,
+      "constraints": {
+        "horizontal": "Min",
+        "vertical": "Min"
+      },
+      "layout_child": {
+        "absolute": false,
+        "horizontal": "Fixed",
+        "vertical": "Fixed",
+        "grow": 0.0,
+        "min_w": null,
+        "max_w": null,
+        "min_h": null,
+        "max_h": null
+      },
+      "is_mask": false,
+      "style_refs": {},
+      "fill_geometry": null,
+      "stroke_geometry": null
+    },
+    "4": {
+      "id": 4,
+      "source_id": null,
+      "name": "Toolbar",
+      "kind": {
+        "Frame": {
+          "clips_content": false,
+          "auto_layout": null,
+          "grids": []
+        }
+      },
+      "parent": 1,
+      "children": [
+        5,
+        7
+      ],
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "blend": "PassThrough",
+      "transform": {
+        "a": 1.0,
+        "b": 0.0,
+        "c": 0.0,
+        "d": 1.0,
+        "tx": 40.0,
+        "ty": 120.0
+      },
+      "size": {
+        "x": 560.0,
+        "y": 100.0
+      },
+      "fills": [
+        {
+          "kind": {
+            "Solid": {
+              "r": 0.972549,
+              "g": 0.98039216,
+              "b": 0.9882353,
+              "a": 1.0
+            }
+          },
+          "opacity": 1.0,
+          "visible": true,
+          "blend": "Normal"
+        }
+      ],
+      "stroke": {
+        "paints": [],
+        "weight": 1.0,
+        "side_weights": null,
+        "align": "Inside",
+        "cap": "None",
+        "join": "Miter",
+        "miter_limit": 4.0,
+        "dashes": []
+      },
+      "effects": [],
+      "corner_radii": [
+        12.0,
+        12.0,
+        12.0,
+        12.0
+      ],
+      "corner_smoothing": 0.0,
+      "constraints": {
+        "horizontal": "Min",
+        "vertical": "Min"
+      },
+      "layout_child": {
+        "absolute": false,
+        "horizontal": "Fixed",
+        "vertical": "Fixed",
+        "grow": 0.0,
+        "min_w": null,
+        "max_w": null,
+        "min_h": null,
+        "max_h": null
+      },
+      "is_mask": false,
+      "style_refs": {},
+      "fill_geometry": null,
+      "stroke_geometry": null
+    },
+    "5": {
+      "id": 5,
+      "source_id": null,
+      "name": "Button / Primary",
+      "kind": {
+        "Instance": {
+          "frame": {
+            "clips_content": false,
+            "auto_layout": null,
+            "grids": []
+          },
+          "component": 2,
+          "component_key": null
+        }
+      },
+      "parent": 4,
+      "children": [
+        6
+      ],
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "blend": "PassThrough",
+      "transform": {
+        "a": 1.0,
+        "b": 0.0,
+        "c": 0.0,
+        "d": 1.0,
+        "tx": 24.0,
+        "ty": 28.0
+      },
+      "size": {
+        "x": 160.0,
+        "y": 44.0
+      },
+      "fills": [
+        {
+          "kind": {
+            "Solid": {
+              "r": 0.14509805,
+              "g": 0.3882353,
+              "b": 0.92156863,
+              "a": 1.0
+            }
+          },
+          "opacity": 1.0,
+          "visible": true,
+          "blend": "Normal"
+        }
+      ],
+      "stroke": {
+        "paints": [],
+        "weight": 1.0,
+        "side_weights": null,
+        "align": "Inside",
+        "cap": "None",
+        "join": "Miter",
+        "miter_limit": 4.0,
+        "dashes": []
+      },
+      "effects": [],
+      "corner_radii": [
+        8.0,
+        8.0,
+        8.0,
+        8.0
+      ],
+      "corner_smoothing": 0.0,
+      "constraints": {
+        "horizontal": "Min",
+        "vertical": "Min"
+      },
+      "layout_child": {
+        "absolute": false,
+        "horizontal": "Fixed",
+        "vertical": "Fixed",
+        "grow": 0.0,
+        "min_w": null,
+        "max_w": null,
+        "min_h": null,
+        "max_h": null
+      },
+      "is_mask": false,
+      "style_refs": {},
+      "fill_geometry": null,
+      "stroke_geometry": null,
+      "component": {
+        "source": 2,
+        "overrides": [],
+        "props": [],
+        "values": {},
+        "bindings": {}
+      }
+    },
+    "6": {
+      "id": 6,
+      "source_id": null,
+      "name": "Label",
+      "kind": {
+        "Text": {
+          "content": "Continue",
+          "style": {
+            "font_family": "Inter",
+            "font_weight": 600,
+            "italic": false,
+            "font_size": 15.0,
+            "line_height": "Auto",
+            "letter_spacing": 0.0,
+            "paragraph_spacing": 0.0,
+            "align_h": "Center",
+            "align_v": "Center",
+            "case": "Original",
+            "decoration": "None",
+            "fills": [
+              {
+                "kind": {
+                  "Solid": {
+                    "r": 1.0,
+                    "g": 1.0,
+                    "b": 1.0,
+                    "a": 1.0
+                  }
+                },
+                "opacity": 1.0,
+                "visible": true,
+                "blend": "Normal"
+              }
+            ],
+            "features": []
+          },
+          "runs": [],
+          "auto_resize": "WidthAndHeight",
+          "max_lines": null,
+          "paragraph": {
+            "indent": 0.0,
+            "list_spacing": 0.0,
+            "hanging_punctuation": false,
+            "hanging_list": false,
+            "leading_trim": "None"
+          },
+          "lists": [],
+          "direction": "Auto"
+        }
+      },
+      "parent": 5,
+      "children": [],
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "blend": "PassThrough",
+      "transform": {
+        "a": 1.0,
+        "b": 0.0,
+        "c": 0.0,
+        "d": 1.0,
+        "tx": 24.0,
+        "ty": 14.0
+      },
+      "size": {
+        "x": 112.0,
+        "y": 16.0
+      },
+      "fills": [],
+      "stroke": {
+        "paints": [],
+        "weight": 1.0,
+        "side_weights": null,
+        "align": "Inside",
+        "cap": "None",
+        "join": "Miter",
+        "miter_limit": 4.0,
+        "dashes": []
+      },
+      "effects": [],
+      "corner_radii": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "corner_smoothing": 0.0,
+      "constraints": {
+        "horizontal": "Min",
+        "vertical": "Min"
+      },
+      "layout_child": {
+        "absolute": false,
+        "horizontal": "Fixed",
+        "vertical": "Fixed",
+        "grow": 0.0,
+        "min_w": null,
+        "max_w": null,
+        "min_h": null,
+        "max_h": null
+      },
+      "is_mask": false,
+      "style_refs": {},
+      "fill_geometry": null,
+      "stroke_geometry": null,
+      "component": {
+        "source": 3,
+        "overrides": [],
+        "props": [],
+        "values": {},
+        "bindings": {}
+      }
+    },
+    "7": {
+      "id": 7,
+      "source_id": null,
+      "name": "Button / Primary",
+      "kind": {
+        "Instance": {
+          "frame": {
+            "clips_content": false,
+            "auto_layout": null,
+            "grids": []
+          },
+          "component": 2,
+          "component_key": null
+        }
+      },
+      "parent": 4,
+      "children": [
+        8
+      ],
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "blend": "PassThrough",
+      "transform": {
+        "a": 1.0,
+        "b": 0.0,
+        "c": 0.0,
+        "d": 1.0,
+        "tx": 208.0,
+        "ty": 28.0
+      },
+      "size": {
+        "x": 160.0,
+        "y": 44.0
+      },
+      "fills": [
+        {
+          "kind": {
+            "Solid": {
+              "r": 0.08627451,
+              "g": 0.6392157,
+              "b": 0.2901961,
+              "a": 1.0
+            }
+          },
+          "opacity": 1.0,
+          "visible": true,
+          "blend": "Normal"
+        }
+      ],
+      "stroke": {
+        "paints": [],
+        "weight": 1.0,
+        "side_weights": null,
+        "align": "Inside",
+        "cap": "None",
+        "join": "Miter",
+        "miter_limit": 4.0,
+        "dashes": []
+      },
+      "effects": [],
+      "corner_radii": [
+        8.0,
+        8.0,
+        8.0,
+        8.0
+      ],
+      "corner_smoothing": 0.0,
+      "constraints": {
+        "horizontal": "Min",
+        "vertical": "Min"
+      },
+      "layout_child": {
+        "absolute": false,
+        "horizontal": "Fixed",
+        "vertical": "Fixed",
+        "grow": 0.0,
+        "min_w": null,
+        "max_w": null,
+        "min_h": null,
+        "max_h": null
+      },
+      "is_mask": false,
+      "style_refs": {},
+      "fill_geometry": null,
+      "stroke_geometry": null,
+      "component": {
+        "source": 2,
+        "overrides": [
+          "Fills"
+        ],
+        "props": [],
+        "values": {},
+        "bindings": {}
+      }
+    },
+    "8": {
+      "id": 8,
+      "source_id": null,
+      "name": "Label",
+      "kind": {
+        "Text": {
+          "content": "Continue",
+          "style": {
+            "font_family": "Inter",
+            "font_weight": 600,
+            "italic": false,
+            "font_size": 15.0,
+            "line_height": "Auto",
+            "letter_spacing": 0.0,
+            "paragraph_spacing": 0.0,
+            "align_h": "Center",
+            "align_v": "Center",
+            "case": "Original",
+            "decoration": "None",
+            "fills": [
+              {
+                "kind": {
+                  "Solid": {
+                    "r": 1.0,
+                    "g": 1.0,
+                    "b": 1.0,
+                    "a": 1.0
+                  }
+                },
+                "opacity": 1.0,
+                "visible": true,
+                "blend": "Normal"
+              }
+            ],
+            "features": []
+          },
+          "runs": [],
+          "auto_resize": "WidthAndHeight",
+          "max_lines": null,
+          "paragraph": {
+            "indent": 0.0,
+            "list_spacing": 0.0,
+            "hanging_punctuation": false,
+            "hanging_list": false,
+            "leading_trim": "None"
+          },
+          "lists": [],
+          "direction": "Auto"
+        }
+      },
+      "parent": 7,
+      "children": [],
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "blend": "PassThrough",
+      "transform": {
+        "a": 1.0,
+        "b": 0.0,
+        "c": 0.0,
+        "d": 1.0,
+        "tx": 24.0,
+        "ty": 14.0
+      },
+      "size": {
+        "x": 112.0,
+        "y": 16.0
+      },
+      "fills": [],
+      "stroke": {
+        "paints": [],
+        "weight": 1.0,
+        "side_weights": null,
+        "align": "Inside",
+        "cap": "None",
+        "join": "Miter",
+        "miter_limit": 4.0,
+        "dashes": []
+      },
+      "effects": [],
+      "corner_radii": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "corner_smoothing": 0.0,
+      "constraints": {
+        "horizontal": "Min",
+        "vertical": "Min"
+      },
+      "layout_child": {
+        "absolute": false,
+        "horizontal": "Fixed",
+        "vertical": "Fixed",
+        "grow": 0.0,
+        "min_w": null,
+        "max_w": null,
+        "min_h": null,
+        "max_h": null
+      },
+      "is_mask": false,
+      "style_refs": {},
+      "fill_geometry": null,
+      "stroke_geometry": null,
+      "component": {
+        "source": 3,
+        "overrides": [],
+        "props": [],
+        "values": {},
+        "bindings": {}
+      }
+    }
+  },
+  "pages": [
+    1
+  ],
+  "styles": {},
+  "style_meta": {},
+  "flows": [],
+  "variables": {},
+  "variable_collections": {},
+  "guides": {},
+  "prototype_device": {
+    "preset": null,
+    "size": null,
+    "background": null
+  },
+  "comments": [],
+  "library": {
+    "published": null,
+    "enabled": [],
+    "external": {}
+  },
+  "library_page": null,
+  "board_session": {
+    "timer": null,
+    "vote": null
+  },
+  "images": {},
+  "next_id": 8
+}
