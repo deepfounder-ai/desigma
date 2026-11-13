@@ -237,8 +237,9 @@ Generate images, or regenerate part of one, without leaving the canvas. desigma 
 
 - **Preferences → AI images…**: paste your OpenRouter API key and choose a model from OpenRouter's list. The key is stored in the system keychain (Windows Credential Manager, macOS Keychain, Secret Service on Linux), never in a file or a document.
 - **Generate image…** (Object menu or right-click): describe the image and pick a ratio. Selected layers are sent as reference images; a selected empty rectangle, ellipse or frame is filled with the result.
-- **Edit image with AI…**: select a layer with an image fill, drag over the part to change and say what should change. Only that part is taken from the model's answer, so the rest of the picture stays pixel for pixel the same. Without a region the whole picture is regenerated.
-- One generation is one Undo step, and the original picture stays in the file.
+- **Edit image with AI…**: select a layer with an image fill, paint over the part to change with a brush and say what should change. Only what you painted is taken from the model's answer, so the rest of the picture stays pixel for pixel the same. With nothing painted the whole picture is regenerated.
+- **Versions**: every generation is remembered on its layer with its prompt, and saved in the file. Click an earlier picture in the dialog to bring it back.
+- While a request runs, the place the image will appear glows on the canvas. One generation is one Undo step.
 
 Your prompt and the reference images go to OpenRouter and the model's provider; nothing is sent until you press **Generate**. Details: [docs/ai-images.md](docs/ai-images.md).
 

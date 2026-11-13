@@ -443,9 +443,13 @@ Image generated	图像已生成
 Describe the image	描述你想要的图像
 Search, or type a model id	搜索，或输入模型 ID
 no references	不支持参考图
-Only the selected part will change.	只会改动选中的部分。
-Drag over the part to change. Without a selection the whole image is regenerated.	拖动选出要修改的部分。不选则重新生成整张图像。
+Only the painted part will change.	只会改动涂抹的部分。
+Paint over the part to change. With nothing painted the whole image is regenerated.	涂抹要修改的部分。不涂抹则重新生成整张图像。
+Brush	画笔
+Versions	版本
+Original	原图
 The image fills the selected layer.	图像将填充所选图层。
 The image is placed in the middle of the view.	图像将放在视图中央。
 selected layers are sent as references.	个所选图层将作为参考图发送。
 Auto	自动
+Generating image…	正在生成图像…

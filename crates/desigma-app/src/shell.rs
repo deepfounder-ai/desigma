@@ -270,7 +270,7 @@ impl Shell {
             Some("version-history") => crate::history::preset::apply(&mut app, opts.library.clone()),
             Some(p @ ("motion-inspector" | "motion-easing" | "motion-library" | "motion-clip")) => crate::motion::inspector::preset(&mut app, p),
             Some(p @ ("dev-annotate" | "dev-compare")) => crate::dev::preset::panel(&mut app, p),
-            Some(p @ ("ai-settings" | "ai-generate" | "ai-edit")) => crate::aiimg::preset(&mut app, ctx, p),
+            Some(p @ ("ai-settings" | "ai-generate" | "ai-edit" | "ai-running")) => crate::aiimg::preset(&mut app, ctx, p),
             Some("share") => app.open_share(),
             Some("collab") => crate::collab::preview(&mut app),
             Some(p @ ("updater" | "updater-banner")) => crate::updater::preset(&mut app, p),

@@ -257,6 +257,7 @@ pub fn show(app: &mut App, ui: &mut Ui, rect: ERect) {
     rulers::overlay(app, ui, rect);
     proto::overlays(app, ui, rect);
     crate::panels::inspect::measure_overlay(app, ui, rect);
+    crate::aiimg::ui::canvas_overlay(app, ui, rect);
     crate::dev::annot::overlay(app, ui, rect);
     if resp.hovered() || !matches!(app.canvas.inter, Interaction::None) {
         if let Some(c) = app.canvas.cursor {

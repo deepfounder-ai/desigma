@@ -20,8 +20,8 @@ pub mod ui;
 
 use crate::app::App;
 use crate::comments::settings;
-use compose::Region;
-use desigma_doc::{ImageScaleMode, NodeId, NodeKind, Paint, PaintKind};
+use compose::{Mask, Region};
+use desigma_doc::{AiVersion, ImageScaleMode, NodeId, NodeKind, Paint, PaintKind};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 const MODEL_SETTING: &str = "ai_image_model";
@@ -30,6 +30,12 @@ const MAX_REFERENCES: usize = 4;
 /// Longest side of a layer rendered as a reference.
 const REFERENCE_SIDE: f32 = 1024.0;
 pub const MAX_PROMPT: usize = 4000;
+/// Most pictures kept in a layer's AI history.
+const MAX_VERSIONS: usize = 24;
+/// Most of them shown in the dialog (the newest).
+const SHOWN_VERSIONS: usize = 8;
+/// Brush radii of the dialog, in screen pixels.
+pub const BRUSHES: [f32; 3] = [10.0, 22.0, 44.0];
 
 /// The model list of the settings dialog.
 #[derive(Default)]
@@ -70,13 +76,58 @@ pub struct Prompt {
     pub aspect: usize,
     /// Selected layers, rendered, sent along as references.
     pub references: Vec<Vec<u8>>,
-    /// Edit: the part to change; `None` regenerates the whole picture.
-    pub region: Option<Region>,
-    pub drag: Option<(f32, f32)>,
+    /// Edit: what the brush marked to change; nothing marked regenerates the whole picture.
+    pub mask: Option<Mask>,
+    /// Index in [`BRUSHES`].
+    pub brush: usize,
+    /// The last point of the stroke being painted, in mask cells.
+    pub last: Option<(f32, f32)>,
+    /// The mark as a texture; rebuilt when `mask_dirty`.
+    pub mask_tex: Option<egui::TextureHandle>,
+    pub mask_dirty: bool,
+    /// Edit: the layer's earlier pictures (the newest few), to bring one back.
+    pub versions: Vec<Thumb>,
     pub preview: Option<egui::TextureHandle>,
     pub error: Option<String>,
     pub running: bool,
+    /// When the running request was sent (`App::now`), for the elapsed time.
+    pub started: f64,
     pub fresh: bool,
+}
+
+/// One picture of a layer's AI history, in the dialog.
+pub struct Thumb {
+    /// Index in the layer's `ai_versions`.
+    pub index: usize,
+    pub prompt: String,
+    pub current: bool,
+    pub tex: egui::TextureHandle,
+}
+
+impl Prompt {
+    fn new(target: Target, aspect: usize, references: Vec<Vec<u8>>) -> Self {
+        Prompt {
+            target,
+            text: String::new(),
+            aspect,
+            references,
+            mask: None,
+            brush: 1,
+            last: None,
+            mask_tex: None,
+            mask_dirty: false,
+            versions: Vec::new(),
+            preview: None,
+            error: None,
+            running: false,
+            started: 0.0,
+            fresh: true,
+        }
+    }
+    /// The box around what the brush marked.
+    pub fn region(&self) -> Option<Region> {
+        self.mask.as_ref().and_then(Mask::bounds).filter(|r| !r.is_tiny())
+    }
 }
 
 pub struct AiState {
@@ -250,8 +301,7 @@ impl App {
             }
             _ => (Target::Place, self.ai_references(), 0),
         };
-        self.ai.prompt =
-            Some(Prompt { target, text: String::new(), aspect, references, region: None, drag: None, preview: None, error: None, running: false, fresh: true });
+        self.ai.prompt = Some(Prompt::new(target, aspect, references));
     }
 
     /// The selected layers as PNG files, at most [`MAX_REFERENCES`].
@@ -280,6 +330,11 @@ impl App {
         if !self.ai_ready(ctx) {
             return;
         }
+        self.ai_edit_dialog(ctx, node, paint, String::new());
+    }
+
+    /// Opens the Edit dialog on the layer's current picture, with `text` in the prompt field.
+    fn ai_edit_dialog(&mut self, ctx: &egui::Context, node: NodeId, paint: usize, text: String) {
         let bytes = match self.doc.get(node).and_then(|n| n.fills.get(paint)).map(|p| &p.kind) {
             Some(PaintKind::Image { image_ref, .. }) => self.doc.images.get(image_ref),
             _ => None,
@@ -296,19 +351,53 @@ impl App {
         let k = (960.0 / w.max(h) as f32).min(1.0);
         let small = image::imageops::resize(&original, ((w as f32 * k) as u32).max(1), ((h as f32 * k) as u32).max(1), image::imageops::FilterType::Triangle);
         let color = egui::ColorImage::from_rgba_unmultiplied([small.width() as usize, small.height() as usize], small.as_raw());
-        let preview = Some(ctx.load_texture("ai-edit-preview", color, egui::TextureOptions::LINEAR));
-        self.ai.prompt = Some(Prompt {
-            aspect: compose::nearest_aspect(w as f32, h as f32),
-            target: Target::Edit { node, paint, original },
-            text: String::new(),
-            references: Vec::new(),
-            region: None,
-            drag: None,
-            preview,
-            error: None,
-            running: false,
-            fresh: true,
+        let mut p = Prompt::new(Target::Edit { node, paint, original }, compose::nearest_aspect(w as f32, h as f32), Vec::new());
+        p.preview = Some(ctx.load_texture("ai-edit-preview", color, egui::TextureOptions::LINEAR));
+        p.mask = Some(Mask::new(small.width(), small.height()));
+        p.versions = self.ai_thumbs(ctx, node, paint);
+        p.text = text;
+        self.ai.prompt = Some(p);
+    }
+
+    /// Small pictures of the layer's AI history (the newest few), oldest first.
+    fn ai_thumbs(&self, ctx: &egui::Context, node: NodeId, paint: usize) -> Vec<Thumb> {
+        let Some(n) = self.doc.get(node) else { return Vec::new() };
+        let now = match n.fills.get(paint).map(|p| &p.kind) {
+            Some(PaintKind::Image { image_ref, .. }) => image_ref.as_str(),
+            _ => "",
+        };
+        let skip = n.ai_versions.len().saturating_sub(SHOWN_VERSIONS);
+        n.ai_versions
+            .iter()
+            .enumerate()
+            .skip(skip)
+            .filter_map(|(index, v)| {
+                let img = compose::decode(self.doc.images.get(&v.image_ref)?).ok()?;
+                let k = (128.0 / img.width().max(img.height()) as f32).min(1.0);
+                let (w, h) = (((img.width() as f32 * k) as u32).max(1), ((img.height() as f32 * k) as u32).max(1));
+                let small = image::imageops::thumbnail(&img, w, h);
+                let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], small.as_raw());
+                let tex = ctx.load_texture(format!("ai-version-{index}"), color, egui::TextureOptions::LINEAR);
+                Some(Thumb { index, prompt: v.prompt.clone(), current: v.image_ref == now, tex })
+            })
+            .collect()
+    }
+
+    /// Shows version `index` of the layer's AI history again (one undo step) and reopens the
+    /// dialog on it. The history itself is kept, so any version can be picked again.
+    pub fn ai_restore_version(&mut self, ctx: &egui::Context, index: usize) {
+        let Some(p) = self.ai.prompt.take() else { return };
+        let Target::Edit { node, paint, .. } = p.target else {
+            self.ai.prompt = Some(p);
+            return;
+        };
+        let Some(key) = self.doc.get(node).and_then(|n| n.ai_versions.get(index)).map(|v| v.image_ref.clone()) else { return };
+        self.edit_nodes(&[node], |n| {
+            if let Some(PaintKind::Image { image_ref, .. }) = n.fills.get_mut(paint).map(|p| &mut p.kind) {
+                *image_ref = key.clone();
+            }
         });
+        self.ai_edit_dialog(ctx, node, paint, p.text);
     }
 
     /// Sends the open dialog's request.
@@ -325,7 +414,8 @@ impl App {
             return;
         }
         let aspect = Some(compose::ASPECTS[p.aspect.min(compose::ASPECTS.len() - 1)].to_string()).filter(|_| p.aspect != 0);
-        let region = p.region.filter(|r| !r.is_tiny());
+        let mask = p.mask.clone().filter(|m| !m.is_empty());
+        let region = mask.as_ref().and_then(Mask::bounds);
         let job: Box<dyn FnOnce() -> Result<Vec<u8>, String> + Send> = match &p.target {
             Target::Edit { original, .. } => {
                 let original = original.clone();
@@ -337,8 +427,10 @@ impl App {
                         references: vec![compose::reference_png(&original)?],
                     };
                     let generated = compose::decode(&api::generate(&base, &key, &req)?)?;
-                    let whole = Region::new((0.0, 0.0), (1.0, 1.0));
-                    compose::encode_png(&compose::paste_region(&original, &generated, region.unwrap_or(whole)))
+                    compose::encode_png(&match &mask {
+                        Some(m) => compose::paste_mask(&original, &generated, m),
+                        None => compose::fit_to(&original, &generated),
+                    })
                 })
             }
             Target::Place | Target::Fill(_) => {
@@ -347,6 +439,7 @@ impl App {
             }
         };
         p.running = true;
+        p.started = self.now;
         p.error = None;
         self.ai.generating = Some(spawn(ctx, job));
     }
@@ -358,7 +451,13 @@ impl App {
     }
 
     /// Puts a finished image into the document, as one undo step.
-    fn ai_apply(&mut self, target: Target, bytes: Vec<u8>) -> Result<(), String> {
+    fn ai_apply(&mut self, target: Target, bytes: Vec<u8>, prompt: String) -> Result<(), String> {
+        // every generation is remembered on its layer, so an earlier picture can be brought back
+        let remember = |n: &mut desigma_doc::Node, image_ref: &str, prompt: &str| {
+            n.ai_versions.push(AiVersion { image_ref: image_ref.to_string(), prompt: prompt.to_string() });
+            let extra = n.ai_versions.len().saturating_sub(MAX_VERSIONS);
+            n.ai_versions.drain(..extra);
+        };
         let (bytes, _, _) = crate::canvas::interact::prepare_image(bytes)?;
         match target {
             Target::Place => {
@@ -370,20 +469,30 @@ impl App {
                 self.edit_nodes(&[id], |n| {
                     n.transform.tx -= n.size.x / 2.0;
                     n.transform.ty -= n.size.y / 2.0;
+                    if let Some(PaintKind::Image { image_ref, .. }) = n.fills.first().map(|p| p.kind.clone()) {
+                        remember(n, &image_ref, &prompt);
+                    }
                 });
             }
             Target::Fill(id) => {
                 let key = image_key(&bytes);
                 self.doc.images.insert(key.clone(), bytes);
-                self.edit_nodes(&[id], |n| n.fills = vec![image_paint(key.clone())]);
+                self.edit_nodes(&[id], |n| {
+                    n.fills = vec![image_paint(key.clone())];
+                    remember(n, &key, &prompt);
+                });
             }
             Target::Edit { node, paint, .. } => {
                 let key = image_key(&bytes);
                 self.doc.images.insert(key.clone(), bytes);
                 self.edit_nodes(&[node], |n| {
-                    if let Some(PaintKind::Image { image_ref, .. }) = n.fills.get_mut(paint).map(|p| &mut p.kind) {
-                        *image_ref = key.clone();
+                    let Some(PaintKind::Image { image_ref, .. }) = n.fills.get_mut(paint).map(|p| &mut p.kind) else { return };
+                    let before = std::mem::replace(image_ref, key.clone());
+                    // the picture the layer had before its first generation opens the history
+                    if !n.ai_versions.iter().any(|v| v.image_ref == before) {
+                        remember(n, &before, "");
                     }
+                    remember(n, &key, &prompt);
                 });
             }
         }
@@ -434,14 +543,15 @@ pub fn pump(app: &mut App) {
         Target::Place => true,
         Target::Fill(id) | Target::Edit { node: id, .. } => app.doc.get(*id).is_some(),
     };
-    let outcome = if alive { app.ai_apply(p.target, bytes) } else { Err("The layer this image was for is gone".into()) };
+    let outcome = if alive { app.ai_apply(p.target, bytes, p.text.trim().to_string()) } else { Err("The layer this image was for is gone".into()) };
     match outcome {
         Ok(()) => app.show_toast("Image generated", false),
         Err(e) => app.show_toast(e, true),
     }
 }
 
-/// `--panel ai-settings|ai-generate|ai-edit`: the dialogs with sample content, for screenshots.
+/// `--panel ai-settings|ai-generate|ai-edit|ai-running`: the dialogs (and the canvas effect of a
+/// running request) with sample content, for screenshots.
 /// Nothing is read from the keychain or sent anywhere.
 pub fn preset(app: &mut App, ctx: &egui::Context, panel: &str) {
     let sample = |id: &str, name: &str, references| api::Model { id: id.into(), name: name.into(), references };
@@ -475,22 +585,34 @@ pub fn preset(app: &mut App, ctx: &egui::Context, panel: &str) {
             });
             let edit = panel == "ai-edit";
             let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], original.as_raw());
-            app.ai.prompt = Some(Prompt {
-                target: if edit { Target::Edit { node: NodeId(0), paint: 0, original } } else { Target::Place },
-                text: if edit {
-                    "Replace the sky with a warm sunset".into()
-                } else {
-                    "A product photo of a ceramic mug on a wooden table, soft daylight".into()
-                },
-                aspect: if edit { 0 } else { 2 },
-                references: Vec::new(),
-                region: edit.then(|| Region::new((0.0, 0.0), (1.0, 0.55))),
-                drag: None,
-                preview: edit.then(|| ctx.load_texture("ai-edit-preview", color, egui::TextureOptions::LINEAR)),
-                error: None,
-                running: false,
-                fresh: false,
-            });
+            let mut p = Prompt::new(
+                if edit { Target::Edit { node: NodeId(0), paint: 0, original: original.clone() } } else { Target::Place },
+                if edit { 0 } else { 2 },
+                Vec::new(),
+            );
+            p.text =
+                if edit { "Replace the sky with a warm sunset".into() } else { "A product photo of a ceramic mug on a wooden table, soft daylight".into() };
+            p.running = panel == "ai-running";
+            p.fresh = false;
+            if edit {
+                p.preview = Some(ctx.load_texture("ai-edit-preview", color, egui::TextureOptions::LINEAR));
+                // the sky, brushed over by hand
+                let mut mask = Mask::new(w, h);
+                for (i, y) in [40.0f32, 95.0, 150.0].into_iter().enumerate() {
+                    mask.stroke((30.0 + 25.0 * i as f32, y), (570.0 - 30.0 * i as f32, y + 12.0), 34.0);
+                }
+                p.mask = Some(mask);
+                p.mask_dirty = true;
+                // three earlier pictures, as a history would show them
+                for (index, shade) in [(0usize, 1.0f32), (1, 0.8), (2, 0.6)] {
+                    let small = image::imageops::thumbnail(&original, 120, 72);
+                    let px: Vec<u8> = small.as_raw().chunks(4).flat_map(|c| [(c[0] as f32 * shade) as u8, (c[1] as f32 * shade) as u8, c[2], 255]).collect();
+                    let tex =
+                        ctx.load_texture(format!("ai-version-{index}"), egui::ColorImage::from_rgba_unmultiplied([120, 72], &px), egui::TextureOptions::LINEAR);
+                    p.versions.push(Thumb { index, prompt: if index == 0 { String::new() } else { "An earlier request".into() }, current: index == 2, tex });
+                }
+            }
+            app.ai.prompt = Some(p);
         }
     }
 }

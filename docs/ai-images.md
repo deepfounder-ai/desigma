@@ -35,16 +35,27 @@ before starting desigma; it takes precedence over a stored key.
 
 Select one layer with an image fill, then **Object → Edit image with AI…**.
 
-- Drag over the preview to mark the part to change; click the preview to clear the mark.
+- Paint over the part to change with the brush (three sizes; **Clear** wipes the mark).
 - Say what should change and press **Generate**.
 
-desigma sends the whole picture with your request and the marked area. From the answer it takes
-only the marked rectangle, blended at its edge, and pastes it into the original at the
-original's resolution. Pixels outside the rectangle are never changed. How well the new content
-matches its surroundings depends on the model. Without a mark the whole picture is replaced by
-the model's version.
+desigma sends the whole picture with your request and where the mark is. From the answer it
+takes only what you painted, faded at its edge, and puts it into the original at the original's
+resolution. Pixels you did not paint are never changed. How well the new content matches its
+surroundings depends on the model. With nothing painted the whole picture is replaced by the
+model's version.
 
-Each generation is one Undo step. The original picture stays in the file, so Undo brings it back.
+While a request runs the dialog steps aside: the place the image will appear glows on the
+canvas, and a small bar shows the elapsed time and **Cancel**.
+
+## Versions
+
+Every generation is remembered on its layer, with the prompt that made it, starting with the
+picture the layer had before. **Edit image with AI…** shows the newest of them under the
+preview; hover one to see its prompt, click it to show that picture again. The history is saved
+in the file (up to 24 pictures per layer) and is not shortened by going back, so any version
+can be picked again.
+
+Each generation, and each time you go back to a version, is one Undo step.
 
 ## What is sent
 

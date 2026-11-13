@@ -52,37 +52,89 @@ impl Region {
     }
 }
 
-/// `original` with `region` taken from `generated` (scaled to the original's size). Pixels
-/// outside the region are the original's; a soft edge inside the region hides the seam.
-pub fn paste_region(original: &RgbaImage, generated: &RgbaImage, region: Region) -> RgbaImage {
-    let (w, h) = original.dimensions();
-    let scaled;
-    let generated = if generated.dimensions() == (w, h) {
-        generated
-    } else {
-        scaled = imageops::resize(generated, w, h, imageops::FilterType::Lanczos3);
-        &scaled
-    };
-    let (x0, y0) = ((region.x0 * w as f32).floor() as u32, (region.y0 * h as f32).floor() as u32);
-    let (x1, y1) = (((region.x1 * w as f32).ceil() as u32).min(w), ((region.y1 * h as f32).ceil() as u32).min(h));
-    let feather = (x1.saturating_sub(x0).min(y1.saturating_sub(y0)) as f32 / 8.0).clamp(1.0, 24.0);
-    let mut out = original.clone();
-    for y in y0..y1 {
-        for x in x0..x1 {
-            // distance to the nearest region edge, in pixels; edges on the image border do not fade
-            let mut d = f32::MAX;
-            for (edge, at_border) in [(x - x0, x0 == 0), (x1 - 1 - x, x1 == w), (y - y0, y0 == 0), (y1 - 1 - y, y1 == h)] {
-                if !at_border {
-                    d = d.min(edge as f32 + 0.5);
+/// What the brush marked on a picture: one byte per cell of a grid the size of the preview
+/// (0 keeps the picture, 255 lets the model change it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mask {
+    pub w: u32,
+    pub h: u32,
+    pub data: Vec<u8>,
+}
+
+impl Mask {
+    pub fn new(w: u32, h: u32) -> Self {
+        let (w, h) = (w.max(1), h.max(1));
+        Mask { w, h, data: vec![0; (w * h) as usize] }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.data.iter().all(|v| *v == 0)
+    }
+    pub fn clear(&mut self) {
+        self.data.fill(0);
+    }
+    /// Marks a round-ended stroke from `a` to `b` (grid cells) of radius `r`.
+    pub fn stroke(&mut self, a: (f32, f32), b: (f32, f32), r: f32) {
+        let r = r.max(0.5);
+        let (x0, x1) = ((a.0.min(b.0) - r).floor().max(0.0) as u32, ((a.0.max(b.0) + r).ceil().max(0.0) as u32).min(self.w.saturating_sub(1)));
+        let (y0, y1) = ((a.1.min(b.1) - r).floor().max(0.0) as u32, ((a.1.max(b.1) + r).ceil().max(0.0) as u32).min(self.h.saturating_sub(1)));
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len2 = dx * dx + dy * dy;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let t = if len2 > 0.0 { (((px - a.0) * dx + (py - a.1) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                let (cx, cy) = (a.0 + dx * t, a.1 + dy * t);
+                if (px - cx).powi(2) + (py - cy).powi(2) <= r * r {
+                    self.data[(y * self.w + x) as usize] = 255;
                 }
             }
-            let a = (d / feather).clamp(0.0, 1.0);
-            let (o, g) = (original.get_pixel(x, y).0, generated.get_pixel(x, y).0);
-            let mut px = [0u8; 4];
-            for c in 0..4 {
-                px[c] = (o[c] as f32 * (1.0 - a) + g[c] as f32 * a).round() as u8;
+        }
+    }
+    /// The box around everything marked.
+    pub fn bounds(&self) -> Option<Region> {
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+        for (i, v) in self.data.iter().enumerate() {
+            if *v != 0 {
+                let (x, y) = (i as u32 % self.w, i as u32 / self.w);
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
             }
-            out.put_pixel(x, y, image::Rgba(px));
+        }
+        (x0 != u32::MAX)
+            .then(|| Region::new((x0 as f32 / self.w as f32, y0 as f32 / self.h as f32), ((x1 + 1) as f32 / self.w as f32, (y1 + 1) as f32 / self.h as f32)))
+    }
+}
+
+/// `generated` at the size of `original`.
+pub fn fit_to(original: &RgbaImage, generated: &RgbaImage) -> RgbaImage {
+    let (w, h) = original.dimensions();
+    if generated.dimensions() == (w, h) {
+        generated.clone()
+    } else {
+        imageops::resize(generated, w, h, imageops::FilterType::Lanczos3)
+    }
+}
+
+/// `original` with the marked part taken from `generated` (scaled to the original's size).
+/// Pixels outside the mark are the original's; inside, a soft edge hides the seam.
+pub fn paste_mask(original: &RgbaImage, generated: &RgbaImage, mask: &Mask) -> RgbaImage {
+    let (w, h) = original.dimensions();
+    let generated = fit_to(original, generated);
+    let hard = image::GrayImage::from_raw(mask.w, mask.h, mask.data.clone()).unwrap_or_else(|| image::GrayImage::new(mask.w, mask.h));
+    // the blurred mark is 1 deep inside and about one half on the edge: only its upper half is
+    // used, so the fade stays inside the mark
+    let soft = imageops::blur(&hard, 3.0);
+    let hard = imageops::resize(&hard, w, h, imageops::FilterType::Triangle);
+    let soft = imageops::resize(&soft, w, h, imageops::FilterType::Triangle);
+    let mut out = original.clone();
+    for (x, y, px) in out.enumerate_pixels_mut() {
+        let inside = hard.get_pixel(x, y).0[0] as f32 / 255.0;
+        if inside == 0.0 {
+            continue;
+        }
+        let a = inside * ((soft.get_pixel(x, y).0[0] as f32 / 255.0 - 0.5) * 2.0).clamp(0.0, 1.0);
+        let g = generated.get_pixel(x, y).0;
+        for (o, g) in px.0.iter_mut().zip(g) {
+            *o = (*o as f32 * (1.0 - a) + g as f32 * a).round() as u8;
         }
     }
     out
@@ -108,23 +160,36 @@ mod tests {
     }
 
     #[test]
-    fn pasting_changes_only_the_region_and_fades_at_its_edges() {
+    fn pasting_changes_only_what_the_brush_marked() {
         let original = flat(200, 100, [10, 10, 10, 255]);
         let generated = flat(100, 50, [250, 250, 250, 255]);
-        let out = paste_region(&original, &generated, Region::new((0.25, 0.2), (0.75, 0.8)));
+        let mut mask = Mask::new(100, 50);
+        // a horizontal stroke in the right half, 10 cells thick each way: cells 50..90 by 15..35
+        mask.stroke((60.0, 25.0), (80.0, 25.0), 10.0);
+        let out = paste_mask(&original, &generated, &mask);
         assert_eq!(out.dimensions(), (200, 100));
-        for (x, y) in [(0, 0), (49, 50), (150, 50), (100, 19), (100, 80), (199, 99)] {
-            assert_eq!(out.get_pixel(x, y).0, [10, 10, 10, 255], "outside the region at {x},{y}");
+        for (x, y) in [(0, 0), (60, 50), (150, 10), (150, 90), (199, 50)] {
+            assert_eq!(out.get_pixel(x, y).0, [10, 10, 10, 255], "outside the mark at {x},{y}");
         }
-        assert_eq!(out.get_pixel(100, 50).0, [250, 250, 250, 255], "the middle is the generated image");
-        let edge = out.get_pixel(50, 50).0[0];
-        assert!(edge > 10 && edge < 250, "the edge is blended: {edge}");
+        assert_eq!(out.get_pixel(150, 50).0, [250, 250, 250, 255], "the middle of the stroke is the generated image");
+        let edge = out.get_pixel(150, 33).0[0];
+        assert!(edge > 10 && edge < 250, "the edge of the stroke is blended: {edge}");
     }
 
     #[test]
-    fn a_region_on_the_image_border_does_not_fade_there() {
-        let out = paste_region(&flat(64, 64, [0, 0, 0, 255]), &flat(64, 64, [200, 200, 200, 255]), Region::new((0.0, 0.0), (1.0, 1.0)));
-        assert!(out.pixels().all(|p| p.0 == [200, 200, 200, 255]), "the whole image is replaced");
+    fn masks_know_their_bounds_and_emptiness() {
+        let mut m = Mask::new(100, 50);
+        assert!(m.is_empty() && m.bounds().is_none());
+        m.stroke((50.0, 25.0), (50.0, 25.0), 5.0);
+        let b = m.bounds().unwrap();
+        assert!((b.x0 - 0.45).abs() < 0.02 && (b.x1 - 0.55).abs() < 0.02 && (b.y0 - 0.4).abs() < 0.03 && (b.y1 - 0.6).abs() < 0.03, "{b:?}");
+        // a stroke that starts and ends outside the grid is clipped to it
+        m.stroke((-20.0, 25.0), (200.0, 25.0), 4.0);
+        let b = m.bounds().unwrap();
+        assert_eq!((b.x0, b.x1), (0.0, 1.0));
+        m.clear();
+        assert!(m.is_empty());
+        assert_eq!(fit_to(&flat(8, 4, [0; 4]), &flat(2, 2, [9, 9, 9, 255])).dimensions(), (8, 4));
     }
 
     #[test]

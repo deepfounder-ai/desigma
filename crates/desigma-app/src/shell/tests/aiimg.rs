@@ -159,6 +159,7 @@ fn generating_places_an_image_and_one_undo_removes_it() {
     assert_eq!(s.count(), before + 1);
     let id = s.app().selection[0];
     assert_eq!(pixels(&s, id).get_pixel(5, 5).0, [200, 30, 30, 255]);
+    assert_eq!(s.app().doc.get(id).unwrap().ai_versions[0].prompt, "a red banner", "a generated layer starts its history");
     s.cmd_key(Key::Z);
     s.cmd_key(Key::Z);
     assert_eq!(s.count(), before, "undo removes the generated layer");
@@ -208,7 +209,7 @@ fn selected_layers_travel_as_references_and_an_empty_shape_is_filled() {
 }
 
 #[test]
-fn editing_a_region_changes_only_that_region_and_undo_restores_the_picture() {
+fn editing_changes_only_what_the_brush_marked_and_keeps_a_history() {
     // the model answers with an all-white picture: only the chosen part may turn white
     let (base, seen) = server(|_| (200, image_answer(&png(100, 50, [255, 255, 255, 255]))));
     let mut s = Sim::new();
@@ -224,12 +225,23 @@ fn editing_a_region_changes_only_that_region_and_undo_restores_the_picture() {
     s.frame(vec![]);
     let r = s.rect_of("ai-region");
     let at = |fx: f32, fy: f32| Pos2::new(r.left() + r.width() * fx, r.top() + r.height() * fy);
-    s.drag(at(0.5, 0.0), at(1.0, 1.0));
-    let region = s.app().ai.prompt.as_ref().unwrap().region.expect("the drag selects a region");
-    assert!((region.x0 - 0.5).abs() < 0.03 && region.x1 > 0.97, "{region:?}");
+    s.click(s.rect_of("ai-brush-2").center());
+    assert_eq!(s.app().ai.prompt.as_ref().unwrap().brush, 2);
+    s.click(s.rect_of("ai-brush-1").center());
+    // one stroke along the middle of the right half
+    s.drag(at(0.6, 0.5), at(0.9, 0.5));
+    let region = s.app().ai.prompt.as_ref().unwrap().region().expect("the stroke marks a part");
+    // the preview is 200 px wide and the brush 22 px: the mark reaches 0.11 beyond the stroke
+    assert!(region.x0 > 0.45 && region.x0 < 0.55 && region.x1 > 0.9 && region.y0 > 0.2 && region.y1 < 0.8, "{region:?}");
+    // Clear wipes the mark; paint it again
+    s.click(s.rect_of("ai-clear").center());
+    assert!(s.app().ai.prompt.as_ref().unwrap().region().is_none());
+    s.drag(at(0.6, 0.5), at(0.9, 0.5));
     s.click(s.rect_of("ai-prompt-text").center());
     s.type_text("make it snow");
     s.click(s.rect_of("ai-generate").center());
+    // while it runs the dialog steps aside for a small bar with Cancel
+    assert!(s.app().ai.prompt.as_ref().unwrap().running);
     wait(&mut s, "the edit", |s| s.app().ai.prompt.is_none());
 
     let body = seen.lock().unwrap()[0].2.clone();
@@ -240,14 +252,36 @@ fn editing_a_region_changes_only_that_region_and_undo_restores_the_picture() {
 
     let out = pixels(&s, id);
     assert_eq!(out.dimensions(), (200, 100), "the picture keeps its size");
-    assert_eq!(out.get_pixel(20, 50).0, [20, 20, 20, 255], "the left half is untouched");
-    assert_eq!(out.get_pixel(90, 10).0, [20, 20, 20, 255]);
-    assert_eq!(out.get_pixel(180, 50).0, [255, 255, 255, 255], "the selected half is the model's");
-    assert_ne!(image_ref(&s, id), original);
-    assert!(s.app().doc.images.contains_key(&original), "the original picture stays in the file");
+    for (x, y) in [(20, 50), (150, 10), (150, 90)] {
+        assert_eq!(out.get_pixel(x, y).0, [20, 20, 20, 255], "outside the stroke at {x},{y}");
+    }
+    assert_eq!(out.get_pixel(150, 50).0, [255, 255, 255, 255], "the middle of the stroke is the model's");
+    let generated = image_ref(&s, id);
+    assert_ne!(generated, original);
+
+    // the layer remembers both pictures
+    let history: Vec<(String, String)> = s.app().doc.get(id).unwrap().ai_versions.iter().map(|v| (v.image_ref.clone(), v.prompt.clone())).collect();
+    assert_eq!(history, [(original.clone(), String::new()), (generated.clone(), "make it snow".to_string())]);
+
+    // the dialog shows them; a click on the first brings the original back and keeps the history
+    s.shell.app.selection = vec![id];
+    s.shell.app.open_ai_edit(&ctx);
+    s.frame(vec![]);
+    s.frame(vec![]);
+    let shown: Vec<bool> = s.app().ai.prompt.as_ref().unwrap().versions.iter().map(|v| v.current).collect();
+    assert_eq!(shown, [false, true]);
+    s.click(s.rect_of("ai-version-0").center());
+    assert_eq!(image_ref(&s, id), original, "the original picture is shown again");
+    assert_eq!(s.app().doc.get(id).unwrap().ai_versions.len(), 2);
+    let shown: Vec<bool> = s.app().ai.prompt.as_ref().expect("the dialog stays open").versions.iter().map(|v| v.current).collect();
+    assert_eq!(shown, [true, false]);
+    s.click(s.rect_of("ai-cancel").center());
 
     s.cmd_key(Key::Z);
-    assert_eq!(image_ref(&s, id), original, "undo puts the original picture back");
+    assert_eq!(image_ref(&s, id), generated, "undo takes the restore back");
+    s.cmd_key(Key::Z);
+    assert_eq!(image_ref(&s, id), original, "undo takes the generation back");
+    assert!(s.app().doc.get(id).unwrap().ai_versions.is_empty(), "and its history entry");
 }
 
 #[test]

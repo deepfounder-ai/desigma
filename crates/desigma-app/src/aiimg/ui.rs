@@ -1,6 +1,6 @@
 //! The two AI image dialogs: Preferences -> AI images… and Generate / Edit.
 
-use super::compose::{Region, ASPECTS};
+use super::compose::ASPECTS;
 use super::{Models, Target};
 use crate::app::App;
 use crate::comments::ui::{button, button_width};
@@ -13,6 +13,8 @@ const PAD: f32 = 20.0;
 const BTN: f32 = 32.0;
 const ROW: f32 = 28.0;
 const LIST_ROWS: f32 = 6.0;
+/// Height of a picture in the versions strip.
+const THUMB: f32 = 48.0;
 
 fn label(p: &Painter, x: f32, y: f32, s: &str) {
     p.text(Pos2::new(x, y + 8.0), Align2::LEFT_CENTER, tr(s), theme::font_small_medium(), theme::TEXT_SECONDARY);
@@ -229,6 +231,15 @@ pub fn settings_dialog(app: &mut App, ctx: &Context) {
 
 pub fn prompt_dialog(app: &mut App, ctx: &Context) {
     let Some(mut d) = app.ai.prompt.take() else { return };
+    if d.running {
+        // the dialog steps aside: the canvas shows where the image is being made
+        let cancel = running_pill(ctx, app.now - d.started);
+        app.ai.prompt = Some(d);
+        if cancel {
+            app.ai_cancel();
+        }
+        return;
+    }
     let screen = ctx.content_rect();
     let (esc, send) = ctx.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::Escape), i.consume_key(Modifiers::COMMAND, Key::Enter)));
     const W: f32 = 520.0;
@@ -240,8 +251,8 @@ pub fn prompt_dialog(app: &mut App, ctx: &Context) {
         ("Generate image", "Describe the image")
     };
     let info = match &d.target {
-        Target::Edit { .. } if d.region.is_some_and(|r| !r.is_tiny()) => "Only the selected part will change.".to_string(),
-        Target::Edit { .. } => "Drag over the part to change. Without a selection the whole image is regenerated.".to_string(),
+        Target::Edit { .. } if d.region().is_some() => "Only the painted part will change.".to_string(),
+        Target::Edit { .. } => "Paint over the part to change. With nothing painted the whole image is regenerated.".to_string(),
         Target::Fill(_) => "The image fills the selected layer.".to_string(),
         Target::Place if d.references.is_empty() => "The image is placed in the middle of the view.".to_string(),
         Target::Place => format!("{} {}", d.references.len(), tr("selected layers are sent as references.")),
@@ -253,6 +264,8 @@ pub fn prompt_dialog(app: &mut App, ctx: &Context) {
     });
     let mut cancel = esc;
     let mut submit = send;
+    let mut restore = None;
+    let strip_h = if d.versions.len() > 1 { 16.0 + THUMB + 12.0 } else { 0.0 };
     egui::Area::new(Id::new("ai-prompt")).order(Order::Foreground).fixed_pos(screen.min).interactable(true).show(ctx, |ui| {
         let p = ui.painter().clone();
         let error_h = d.error.as_ref().map_or(0.0, |e| note_height(&p, text_w, tr(e)) + 10.0);
@@ -260,7 +273,8 @@ pub fn prompt_dialog(app: &mut App, ctx: &Context) {
         let h = PAD
             + 24.0
             + 12.0
-            + preview_size.map_or(0.0, |s| s.y + 12.0)
+            + preview_size.map_or(0.0, |s| s.y + 8.0 + 30.0 + 12.0)
+            + strip_h
             + 96.0
             + 10.0
             + if editing { 0.0 } else { 30.0 + 10.0 }
@@ -276,46 +290,114 @@ pub fn prompt_dialog(app: &mut App, ctx: &Context) {
         let x0 = rect.left() + PAD;
         let mut y = rect.top() + PAD + 24.0 + 12.0;
 
-        if let (Some(tex), Some(size)) = (&d.preview, preview_size) {
+        if let (Some(tex), Some(size)) = (d.preview.clone(), preview_size) {
             let r = Rect::from_min_size(Pos2::new(x0 + (text_w - size.x) / 2.0, y), size);
             p.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-            let resp = ui.interact(r, Id::new("ai-region"), if d.running { Sense::hover() } else { Sense::click_and_drag() });
+            let resp = ui.interact(r, Id::new("ai-region"), Sense::click_and_drag());
             widgets::record(ui, "ai-region", r);
-            let frac = |pos: Pos2| ((pos.x - r.left()) / r.width(), (pos.y - r.top()) / r.height());
-            if resp.drag_started() {
-                // where the button went down, not where the drag was recognized
-                d.drag = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).map(frac);
-            }
-            if let (Some(a), Some(pos)) = (d.drag, resp.interact_pointer_pos()) {
-                if resp.dragged() || resp.drag_stopped() {
-                    d.region = Some(Region::new(a, frac(pos)));
+            let radius = super::BRUSHES[d.brush.min(super::BRUSHES.len() - 1)];
+            if let Some(mask) = d.mask.as_mut() {
+                // the brush: every pointer position while the button is down joins the stroke
+                let (mw, mh) = (mask.w as f32, mask.h as f32);
+                let cell = |pos: Pos2| ((pos.x - r.left()) / r.width() * mw, (pos.y - r.top()) / r.height() * mh);
+                let down = resp.is_pointer_button_down_on();
+                let at = if down { ui.input(|i| i.pointer.interact_pos()) } else { None };
+                match at.map(cell) {
+                    Some(now) => {
+                        // a new stroke starts where the button went down
+                        let from = d.last.or(ui.input(|i| i.pointer.press_origin()).map(cell)).unwrap_or(now);
+                        mask.stroke(from, now, radius * mw / r.width());
+                        d.last = Some(now);
+                        d.mask_dirty = true;
+                    }
+                    None => d.last = None,
+                }
+                if d.mask_dirty {
+                    let tint = theme::BG_BRAND;
+                    let px: Vec<u8> = mask.data.iter().flat_map(|m| [tint.r(), tint.g(), tint.b(), if *m == 0 { 0 } else { 105 }]).collect();
+                    let image = egui::ColorImage::from_rgba_unmultiplied([mask.w as usize, mask.h as usize], &px);
+                    d.mask_tex = Some(ui.ctx().load_texture("ai-edit-mask", image, egui::TextureOptions::LINEAR));
+                    d.mask_dirty = false;
+                }
+                if let Some(mt) = &d.mask_tex {
+                    p.image(mt.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                }
+                if let Some(pos) = resp.hover_pos() {
+                    let ring = p.with_clip_rect(r);
+                    ring.circle_stroke(pos, radius, Stroke::new(1.5, Color32::WHITE));
+                    ring.circle_stroke(pos, radius + 1.0, Stroke::new(1.0, Color32::from_black_alpha(120)));
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                 }
             }
-            if resp.drag_stopped() {
-                d.drag = None;
-                d.region = d.region.filter(|r| !r.is_tiny());
-            }
-            if resp.clicked() {
-                d.region = None;
-            }
-            if let Some(g) = d.region {
-                let sel = Rect::from_min_max(
-                    Pos2::new(r.left() + g.x0 * r.width(), r.top() + g.y0 * r.height()),
-                    Pos2::new(r.left() + g.x1 * r.width(), r.top() + g.y1 * r.height()),
+            y += size.y + 8.0;
+
+            // brush sizes and Clear
+            label(&p, x0, y + 7.0, "Brush");
+            let mut x = x0 + widgets::text_width(&p, tr("Brush"), &theme::font_small_medium()) + 10.0;
+            for (i, size) in super::BRUSHES.iter().enumerate() {
+                let br = Rect::from_min_size(Pos2::new(x, y), Vec2::new(34.0, 30.0));
+                let resp = ui.interact(br, Id::new(("ai-brush", i)), Sense::click());
+                let on = d.brush == i;
+                p.rect_filled(
+                    br,
+                    theme::cr(theme::RADIUS_MEDIUM),
+                    if on {
+                        theme::BG_SELECTED
+                    } else if resp.hovered() {
+                        theme::BG_HOVER
+                    } else {
+                        theme::BG_SECONDARY
+                    },
                 );
-                // dim what stays, outline what changes
-                let dim = Color32::from_black_alpha(110);
-                for part in [
-                    Rect::from_min_max(r.min, Pos2::new(r.right(), sel.top())),
-                    Rect::from_min_max(Pos2::new(r.left(), sel.bottom()), r.max),
-                    Rect::from_min_max(Pos2::new(r.left(), sel.top()), Pos2::new(sel.left(), sel.bottom())),
-                    Rect::from_min_max(Pos2::new(sel.right(), sel.top()), Pos2::new(r.right(), sel.bottom())),
-                ] {
-                    p.rect_filled(part, 0.0, dim);
+                p.circle_filled(br.center(), 2.0 + size / 6.0, theme::TEXT);
+                if resp.clicked() {
+                    d.brush = i;
                 }
-                p.rect_stroke(sel, 0.0, Stroke::new(1.5, theme::BG_BRAND), StrokeKind::Inside);
+                widgets::record(ui, &format!("ai-brush-{i}"), br);
+                x += 34.0 + 6.0;
             }
-            y += size.y + 12.0;
+            let painted = d.mask.as_ref().is_some_and(|m| !m.is_empty());
+            let cw = button_width(&p, "Clear") + 16.0;
+            let cr = Rect::from_min_size(Pos2::new(x0 + text_w - cw, y), Vec2::new(cw, 30.0));
+            if button(ui, cr, "ai-clear", "Clear", false, painted).clicked() && painted {
+                if let Some(m) = d.mask.as_mut() {
+                    m.clear();
+                    d.mask_dirty = true;
+                }
+            }
+            widgets::record(ui, "ai-clear", cr);
+            y += 30.0 + 12.0;
+        }
+
+        // the layer's earlier pictures: a click brings one back
+        if d.versions.len() > 1 {
+            label(&p, x0, y - 4.0, "Versions");
+            let mut x = x0;
+            for (i, v) in d.versions.iter().enumerate() {
+                let s = v.tex.size_vec2();
+                let w = (s.x / s.y * THUMB).clamp(24.0, 96.0);
+                let tr_ = Rect::from_min_size(Pos2::new(x, y + 16.0), Vec2::new(w, THUMB));
+                if tr_.right() > x0 + text_w {
+                    break;
+                }
+                let resp = ui.interact(tr_, Id::new(("ai-version", v.index)), Sense::click());
+                p.image(v.tex.id(), tr_, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                let ring = if v.current {
+                    Stroke::new(2.0, theme::BG_BRAND)
+                } else if resp.hovered() {
+                    Stroke::new(1.5, theme::TEXT)
+                } else {
+                    Stroke::new(1.0, theme::BORDER)
+                };
+                p.rect_stroke(tr_, 2.0, ring, StrokeKind::Outside);
+                let tip = if v.prompt.is_empty() { tr("Original").to_string() } else { v.prompt.clone() };
+                if resp.on_hover_text(tip).clicked() && !v.current {
+                    restore = Some(v.index);
+                }
+                widgets::record(ui, &format!("ai-version-{i}"), tr_);
+                x += w + 8.0;
+            }
+            y += strip_h;
         }
 
         let prompt_r = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(text_w, 96.0));
@@ -385,7 +467,124 @@ pub fn prompt_dialog(app: &mut App, ctx: &Context) {
     app.ai.prompt = Some(d);
     if cancel {
         app.ai_cancel();
+    } else if let Some(index) = restore {
+        app.ai_restore_version(ctx, index);
     } else if submit {
         app.ai_submit(ctx);
     }
+}
+
+/// The small bar shown while a request runs: a spinner, the elapsed time and Cancel.
+/// Returns true when the request should be cancelled.
+fn running_pill(ctx: &Context, elapsed: f64) -> bool {
+    let screen = ctx.content_rect();
+    let mut cancel = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+    let secs = elapsed.max(0.0) as u64;
+    let text = format!("{} {}:{:02}", tr("Generating image\u{2026}"), secs / 60, secs % 60);
+    egui::Area::new(Id::new("ai-running")).order(Order::Foreground).fixed_pos(screen.min).interactable(true).show(ctx, |ui| {
+        let p = ui.painter().clone();
+        let cw = button_width(&p, "Cancel") + 16.0;
+        let tw = widgets::text_width(&p, &text, &theme::font_body_strong());
+        let w = 14.0 + 18.0 + 10.0 + tw + 14.0 + cw + 6.0;
+        let rect = Rect::from_min_size(Pos2::new(screen.center().x - w / 2.0, screen.bottom() - 132.0), Vec2::new(w, 44.0));
+        ui.allocate_rect(rect, Sense::click());
+        widgets::menu_panel(&p, rect, 12);
+        spinner(&p, Pos2::new(rect.left() + 14.0 + 9.0, rect.center().y), 8.0, ui.input(|i| i.time));
+        p.text(Pos2::new(rect.left() + 14.0 + 18.0 + 10.0, rect.center().y), Align2::LEFT_CENTER, &text, theme::font_body_strong(), theme::TEXT);
+        let cr = Rect::from_min_size(Pos2::new(rect.right() - 6.0 - cw, rect.top() + 6.0), Vec2::new(cw, 32.0));
+        if button(ui, cr, "ai-cancel", "Cancel", false, true).clicked() {
+            cancel = true;
+        }
+        widgets::record(ui, "ai-cancel", cr);
+    });
+    ctx.request_repaint();
+    cancel
+}
+
+/// A rotating arc.
+fn spinner(p: &Painter, c: Pos2, r: f32, time: f64) {
+    let start = (time * 4.5) as f32;
+    let pts: Vec<Pos2> = (0..=18).map(|i| start + i as f32 / 18.0 * 4.4).map(|a| c + Vec2::new(a.cos(), a.sin()) * r).collect();
+    p.circle_stroke(c, r, Stroke::new(2.0, theme::BORDER));
+    p.add(egui::Shape::line(pts, Stroke::new(2.0, theme::BG_BRAND)));
+}
+
+/// Where on the screen the running request's image will appear: the layer being filled or
+/// edited (the marked part of it), or the middle of the view for a new image.
+fn target_rect(app: &App, d: &super::Prompt, canvas: Rect) -> Option<Rect> {
+    let of_node = |id| {
+        let b = crate::panels::inspect::page_aabb(&app.doc, id)?;
+        let s = |x: f32, y: f32| app.view.to_screen(canvas.min, desigma_doc::Vec2::new(x, y));
+        Some(Rect::from_two_pos(s(b.left(), b.top()), s(b.right(), b.bottom())))
+    };
+    match &d.target {
+        Target::Fill(id) => of_node(*id),
+        Target::Edit { node, .. } => {
+            let r = of_node(*node)?;
+            Some(match d.region() {
+                Some(g) => Rect::from_min_max(
+                    Pos2::new(r.left() + g.x0 * r.width(), r.top() + g.y0 * r.height()),
+                    Pos2::new(r.left() + g.x1 * r.width(), r.top() + g.y1 * r.height()),
+                ),
+                None => r,
+            })
+        }
+        Target::Place => {
+            let ratio = ASPECTS[d.aspect.min(ASPECTS.len() - 1)].split_once(':').and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?)));
+            let (w, h) = ratio.unwrap_or((1.0, 1.0));
+            let k = (360.0 / w).min(280.0 / h);
+            Some(Rect::from_center_size(canvas.center(), Vec2::new(w * k, h * k)))
+        }
+    }
+}
+
+/// While a request runs: the place the image will appear glows, with a band of light sweeping
+/// across it, twinkling points and a pulsing outline. Drawn over the canvas.
+pub fn canvas_overlay(app: &App, ui: &Ui, canvas: Rect) {
+    let Some(d) = app.ai.prompt.as_ref().filter(|d| d.running) else { return };
+    let Some(r) = target_rect(app, d, canvas) else { return };
+    if r.width() < 2.0 || r.height() < 2.0 {
+        return;
+    }
+    let t = ui.input(|i| i.time) as f32;
+    let p = ui.painter().with_clip_rect(canvas.intersect(r.expand(3.0)));
+    let brand = theme::BG_BRAND;
+    let tint = |a: f32| Color32::from_rgba_unmultiplied(brand.r(), brand.g(), brand.b(), (a.clamp(0.0, 1.0) * 255.0) as u8);
+    let pulse = 0.5 + 0.5 * (t * 2.6).sin();
+    p.rect_filled(r, 2.0, tint(0.16 + 0.06 * pulse));
+
+    // the sweep: a slanted band, clear at its edges and bright in the middle
+    let inner = p.with_clip_rect(canvas.intersect(r));
+    let band = (r.width() * 0.35).clamp(40.0, 260.0);
+    let slant = r.height() * 0.35;
+    let travel = r.width() + band + slant;
+    let x = r.left() - band + travel * (t * 0.55).fract();
+    let clear = Color32::from_rgba_unmultiplied(255, 255, 255, 0);
+    let bright = Color32::from_rgba_unmultiplied(255, 255, 255, 70);
+    let mut mesh = egui::Mesh::default();
+    for (i, (dx, c)) in [(0.0, clear), (band / 2.0, bright), (band, clear)].into_iter().enumerate() {
+        mesh.colored_vertex(Pos2::new(x + dx, r.top()), c);
+        mesh.colored_vertex(Pos2::new(x + dx - slant, r.bottom()), c);
+        if i > 0 {
+            let v = (i as u32) * 2;
+            mesh.add_triangle(v - 2, v - 1, v);
+            mesh.add_triangle(v - 1, v, v + 1);
+        }
+    }
+    inner.add(egui::Shape::mesh(mesh));
+
+    // twinkles at fixed places, each on its own beat
+    let count = ((r.area() / 9000.0) as usize).clamp(4, 28);
+    for i in 0..count {
+        let h = |k: f32| ((i as f32 * 12.9898 + k * 78.233).sin() * 43_758.547).fract().abs();
+        let at = Pos2::new(r.left() + h(1.0) * r.width(), r.top() + h(2.0) * r.height());
+        let glow = (0.5 + 0.5 * (t * (1.6 + h(3.0) * 2.4) + h(4.0) * std::f32::consts::TAU).sin()).powi(3);
+        let size = 1.5 + 3.5 * glow;
+        let c = Color32::from_rgba_unmultiplied(255, 255, 255, (glow * 220.0) as u8);
+        inner.line_segment([at - Vec2::new(size, 0.0), at + Vec2::new(size, 0.0)], Stroke::new(1.2, c));
+        inner.line_segment([at - Vec2::new(0.0, size), at + Vec2::new(0.0, size)], Stroke::new(1.2, c));
+    }
+
+    p.rect_stroke(r, 2.0, Stroke::new(1.5, tint(0.55 + 0.45 * pulse)), StrokeKind::Outside);
+    ui.ctx().request_repaint();
 }
