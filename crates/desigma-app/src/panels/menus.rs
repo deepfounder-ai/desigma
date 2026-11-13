@@ -111,6 +111,12 @@ pub enum Action {
     ToggleAgentBridge,
     /// Preferences -> Claude…: register the installed MCP server with Claude.
     Mcp,
+    /// Preferences -> AI images…: the OpenRouter key and the image model.
+    AiSettings,
+    /// Object -> Generate image…
+    AiGenerate,
+    /// Object -> Edit image with AI…
+    AiEdit,
     /// Preferences -> Language -> ...
     SetLanguage(crate::i18n::Lang),
     /// Help -> Check for updates.
@@ -231,6 +237,9 @@ pub fn run(app: &mut App, ctx: &Context, a: Action) {
         Action::ToggleVersionHistory => app.toggle_version_history(),
         Action::SaveVersion => app.begin_save_version(),
         Action::YourName => app.ask_author_name(),
+        Action::AiSettings => app.open_ai_settings(ctx, None),
+        Action::AiGenerate => app.open_ai_generate(ctx),
+        Action::AiEdit => app.open_ai_edit(ctx),
         Action::ToggleGpu => app.toggle_gpu(),
         Action::ToggleUpdateCheck => app.toggle_update_check(),
         Action::ToggleAgentBridge => app.toggle_agent_bridge(ctx),
@@ -424,7 +433,9 @@ fn main_nodes(app: &App) -> Vec<Node> {
         leaf("Bring to front", "Ctrl+Shift+]", Action::BringToFront).off(!has_sel),
         leaf("Bring forward", "Ctrl+]", Action::BringForward).off(!has_sel),
         leaf("Send backward", "Ctrl+[", Action::SendBackward).off(!has_sel),
-        leaf("Send to back", "Ctrl+Shift+[", Action::SendToBack).off(!has_sel),
+        leaf("Send to back", "Ctrl+Shift+[", Action::SendToBack).off(!has_sel).sep(),
+        leaf("Generate image…", "", Action::AiGenerate),
+        leaf("Edit image with AI…", "", Action::AiEdit).off(app.ai_editable().is_none()),
     ];
     let text = vec![
         leaf("Bold", "Ctrl+B", Action::TextBold).off(!has_text),
@@ -497,6 +508,7 @@ fn main_nodes(app: &App) -> Vec<Node> {
                     .on(crate::RELEASE_BUILD && !app.updater.no_auto_check)
                     .off(!crate::RELEASE_BUILD),
                 leaf("Claude…", "", Action::Mcp),
+                leaf("AI images…", "", Action::AiSettings),
                 leaf("Allow MCP agents to control this editor", "", Action::ToggleAgentBridge).on(app.bridge.bridge.is_some()),
                 submenu(
                     "Language",

@@ -53,11 +53,20 @@ dirs = "5"
 roxmltree = "0.20"
 egui = "0.35"
 resvg = { version = "0.45", default-features = false }
+base64 = "0.22"
 
 # Finder and browser opens arrive as Apple events (see src/macos.rs); the versions winit uses.
 [target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSData", "NSString"] }
+
+# The OpenRouter key for AI images lives in the OS credential store (see src/aiimg/keys.rs).
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["async-secret-service", "tokio", "crypto-rust"] }
 
 [build-dependencies]
 winresource = "0.1"

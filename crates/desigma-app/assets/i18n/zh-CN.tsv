@@ -424,3 +424,28 @@ Reload	重新载入
 Reloaded {} (changed on disk)	已重新载入 {}（磁盘上有变化）
 Keep both (save a copy)	两边都留着（另存一份）
 Saved your edits to {}	已把你的修改另存为 {}
+
+# ---- AI images
+AI images…	AI 图像…
+AI images	AI 图像
+Generate image…	生成图像…
+Generate image	生成图像
+Edit image with AI…	用 AI 编辑图像…
+Edit image with AI	用 AI 编辑图像
+OpenRouter API key	OpenRouter API 密钥
+Model	模型
+Load models	加载模型
+Loading models…	正在加载模型…
+Remove key	移除密钥
+Generate	生成
+Generating… this can take a minute	正在生成…可能需要一分钟
+Image generated	图像已生成
+Describe the image	描述你想要的图像
+Search, or type a model id	搜索，或输入模型 ID
+no references	不支持参考图
+Only the selected part will change.	只会改动选中的部分。
+Drag over the part to change. Without a selection the whole image is regenerated.	拖动选出要修改的部分。不选则重新生成整张图像。
+The image fills the selected layer.	图像将填充所选图层。
+The image is placed in the middle of the view.	图像将放在视图中央。
+selected layers are sent as references.	个所选图层将作为参考图发送。
+Auto	自动

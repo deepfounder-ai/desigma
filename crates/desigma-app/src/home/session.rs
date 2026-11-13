@@ -73,6 +73,7 @@ impl App {
                     Err(e) => self.show_toast(format!("Could not create the sample project: {e}"), true),
                 }
                 self.lib = Some(lib);
+                self.load_ai_settings();
             }
             Err(e) => self.show_toast(format!("Cannot open the library at {}: {e}", root.display()), true),
         }

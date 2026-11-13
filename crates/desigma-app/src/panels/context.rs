@@ -70,6 +70,8 @@ fn entries(app: &App) -> Vec<Entry> {
         list.push(leaf(MenuItem::new("Mark as completed"), Action::MarkCompleted));
         list.push(leaf(MenuItem::new("Remove dev status"), Action::ClearDevStatus));
     }
+    list.push(leaf(MenuItem::new("Generate image…"), Action::AiGenerate));
+    list.push(leaf(MenuItem::new("Edit image with AI…").disabled(app.ai_editable().is_none()).sep(), Action::AiEdit));
     list.push(leaf(MenuItem::new("Delete").shortcut("Del").disabled(!has), Action::Delete));
     list
 }
