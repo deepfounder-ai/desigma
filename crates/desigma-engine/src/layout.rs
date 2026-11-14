@@ -312,8 +312,9 @@ pub fn relayout_around(doc: &mut Document, ed: &mut Edit, id: NodeId) {
 /// Applies children constraints when a (non auto-layout) frame is resized.
 pub fn apply_constraints(doc: &mut Document, ed: &mut Edit, frame: NodeId, old: Vec2, new: Vec2) {
     let Some(f) = doc.get(frame) else { return };
+    let is_group = matches!(f.kind, NodeKind::Group);
     if f.kind.frame_props().map(|p| p.auto_layout.is_some()).unwrap_or(false)
-        || matches!(f.kind, NodeKind::Group | NodeKind::BoardSection(_) | NodeKind::Table(_))
+        || matches!(f.kind, NodeKind::BoardSection(_) | NodeKind::Table(_))
     {
         return;
     }
@@ -324,16 +325,21 @@ pub fn apply_constraints(doc: &mut Document, ed: &mut Edit, frame: NodeId, old: 
     }
     for c in f.children.clone() {
         let Some(k) = doc.get(c) else { continue };
-        if k.transform.b.abs() > 1e-4 || k.transform.c.abs() > 1e-4 {
+        let (cons_h, cons_v) = if is_group {
+            (Constraint::Scale, Constraint::Scale)
+        } else {
+            (k.constraints.horizontal, k.constraints.vertical)
+        };
+        let rotated = k.transform.b.abs() > 1e-4 || k.transform.c.abs() > 1e-4;
+        if rotated && (cons_h != Constraint::Scale || cons_v != Constraint::Scale) {
             continue;
         }
         let (mut x, mut w) = (k.transform.tx, k.size.x);
         let (mut y, mut h) = (k.transform.ty, k.size.y);
         let old_child = k.size;
-        let cons = k.constraints;
         let rx = if old.x > 0.0 { new.x / old.x } else { 1.0 };
         let ry = if old.y > 0.0 { new.y / old.y } else { 1.0 };
-        match cons.horizontal {
+        match cons_h {
             Constraint::Min => {}
             Constraint::Max => x += dw,
             Constraint::Center => x += dw / 2.0,
@@ -343,7 +349,7 @@ pub fn apply_constraints(doc: &mut Document, ed: &mut Edit, frame: NodeId, old: 
                 w *= rx;
             }
         }
-        match cons.vertical {
+        match cons_v {
             Constraint::Min => {}
             Constraint::Max => y += dh,
             Constraint::Center => y += dh / 2.0,
@@ -359,6 +365,7 @@ pub fn apply_constraints(doc: &mut Document, ed: &mut Edit, frame: NodeId, old: 
             k.transform.tx = x;
             k.transform.ty = y;
             k.size = v2(w, h);
+            crate::resize::scale_vector_geometry(&mut k.kind, old_child, v2(w, h));
         }
         if (w - old_child.x).abs() > 1e-4 || (h - old_child.y).abs() > 1e-4 {
             apply_constraints(doc, ed, c, old_child, v2(w, h));
