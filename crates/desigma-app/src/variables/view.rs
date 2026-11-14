@@ -1411,14 +1411,16 @@ fn run_menu(app: &mut App, ctx: &Context, fr: &mut Frame) {
                     app.vars.rename_frames = 0;
                 }
                 (VarMenuKind::Settings, 0) => {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("Variables JSON", &["json"]).pick_file() {
-                        app.import_variables_file(&path);
-                    }
+                    app.pick_file_async(
+                        || rfd::FileDialog::new().add_filter("Variables JSON", &["json"]).pick_file(),
+                        |app, path| app.import_variables_file(&path),
+                    );
                 }
                 (VarMenuKind::Settings, _) => {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("Variables JSON", &["json"]).set_file_name("variables.json").save_file() {
-                        app.export_variables_file(&path);
-                    }
+                    app.pick_file_async(
+                        || rfd::FileDialog::new().add_filter("Variables JSON", &["json"]).set_file_name("variables.json").save_file(),
+                        |app, path| app.export_variables_file(&path),
+                    );
                 }
                 (VarMenuKind::Filter, i) => {
                     let k = [VariableKind::Color, VariableKind::Number, VariableKind::String, VariableKind::Boolean][i];

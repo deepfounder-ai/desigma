@@ -827,9 +827,9 @@ impl App {
     }
 
     pub fn open_dialog(&mut self) {
-        if let Some(p) = io::pick_open() {
-            self.request_open(crate::instance::Open::File(p));
-        }
+        self.pick_file_async(io::pick_open, |app, p| {
+            app.request_open(crate::instance::Open::File(p));
+        });
     }
 
     pub fn open_path(&mut self, p: PathBuf) {
@@ -879,11 +879,19 @@ impl App {
             self.save_library_file_with_toast();
             return;
         }
-        let target = match (&self.file_path, as_new) {
-            (Some(p), false) if p.extension().map(|e| e == io::NATIVE_EXT).unwrap_or(false) => Some(p.clone()),
-            _ => io::pick_save(&self.doc.name),
-        };
-        let Some(path) = target else { return };
+        if !as_new {
+            if let Some(p) = self.file_path.as_ref().filter(|p| p.extension().is_some_and(|e| e == io::NATIVE_EXT)).cloned() {
+                self.save_to_path(p);
+                return;
+            }
+        }
+        let default_name = self.doc.name.clone();
+        self.pick_file_async(move || io::pick_save(&default_name), |app, path| {
+            app.save_to_path(path);
+        });
+    }
+
+    fn save_to_path(&mut self, path: PathBuf) {
         match io::save_path(&self.doc, &path) {
             Ok(p) => {
                 self.show_toast(format!("Saved {}", p.display()), false);
@@ -921,16 +929,17 @@ impl App {
             return;
         };
         let name = self.doc.get(id).map(|n| n.name.clone()).unwrap_or_default();
-        let Some(path) = io::pick_export(&name) else { return };
-        let png = desigma_export::export_png(&self.export_doc(), id, 1.0);
-        if png.is_empty() {
-            self.show_toast("Nothing to export", true);
-            return;
-        }
-        match std::fs::write(&path, png) {
-            Ok(()) => self.show_toast(format!("Exported {}", path.display()), false),
-            Err(e) => self.show_toast(format!("Export failed: {e}"), true),
-        }
+        self.pick_file_async(move || io::pick_export(&name), move |app, path| {
+            let png = desigma_export::export_png(&app.export_doc(), id, 1.0);
+            if png.is_empty() {
+                app.show_toast("Nothing to export", true);
+                return;
+            }
+            match std::fs::write(&path, png) {
+                Ok(()) => app.show_toast(format!("Exported {}", path.display()), false),
+                Err(e) => app.show_toast(format!("Export failed: {e}"), true),
+            }
+        });
     }
 }
 

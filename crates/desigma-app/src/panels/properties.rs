@@ -1285,18 +1285,26 @@ pub(crate) fn picker_popup(app: &mut App, ui: &mut Ui, region: Rect) {
         pk.eyedrop = true;
     }
     if out.want_image {
-        if let Some(path) = rfd::FileDialog::new().add_filter("Images", &crate::canvas::interact::IMAGE_EXTENSIONS[..4]).pick_file() {
-            match std::fs::read(&path).map_err(|_| "Cannot read image".to_string()).and_then(crate::canvas::interact::prepare_image) {
-                Ok((bytes, _, _)) => {
-                    let key = format!("img-{}", app.doc.images.len() + 1);
-                    app.doc.images.insert(key.clone(), bytes);
-                    pk.paint.kind = PaintKind::Image { image_ref: key, scale_mode: ImageScaleMode::Fill };
-                    pk.paint.opacity = 1.0;
-                    changed = true;
+        app.pick_file_async(
+            || rfd::FileDialog::new().add_filter("Images", &crate::canvas::interact::IMAGE_EXTENSIONS[..4]).pick_file(),
+            |app, path| {
+                match std::fs::read(&path).map_err(|_| "Cannot read image".to_string()).and_then(crate::canvas::interact::prepare_image) {
+                    Ok((bytes, _, _)) => {
+                        let key = format!("img-{}", app.doc.images.len() + 1);
+                        app.doc.images.insert(key.clone(), bytes);
+                        if let Some(mut pk) = app.props.picker.take() {
+                            pk.paint.kind = PaintKind::Image { image_ref: key, scale_mode: ImageScaleMode::Fill };
+                            pk.paint.opacity = 1.0;
+                            pk.tx.ed.revert(&mut app.doc);
+                            apply_picker(&mut app.doc, &mut pk);
+                            app.changed();
+                            app.props.picker = Some(pk);
+                        }
+                    }
+                    Err(e) => app.show_toast(e, true),
                 }
-                Err(e) => app.show_toast(e, true),
-            }
-        }
+            },
+        );
     }
     // Eyedropper: the next canvas click samples the colour under the pointer.
     if pk.eyedrop {

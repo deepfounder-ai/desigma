@@ -475,42 +475,50 @@ pub fn run_export(app: &mut App, ids: &[NodeId]) {
         app.show_toast(if skipped_pdf { "PDF export is not supported" } else { "Nothing to export" }, true);
         return;
     }
-    let mut written = Vec::new();
     if jobs.len() == 1 {
-        let (file, id, s) = &jobs[0];
-        let Some(path) = rfd::FileDialog::new().add_filter(s.format.label(), &[s.format.extension()]).set_file_name(file).save_file() else { return };
-        let bytes = s.render(&app.doc, *id);
-        if bytes.is_empty() {
-            app.show_toast("Nothing to export", true);
-            return;
-        }
-        match std::fs::write(&path, bytes) {
-            Ok(()) => written.push(path),
-            Err(e) => {
-                app.show_toast(format!("Export failed: {e}"), true);
-                return;
-            }
-        }
-    } else {
-        let Some(dir) = rfd::FileDialog::new().set_title("Choose export folder").pick_folder() else { return };
-        for (file, id, s) in &jobs {
-            let bytes = s.render(&app.doc, *id);
-            if bytes.is_empty() {
-                continue;
-            }
-            let path = dir.join(file);
-            match std::fs::write(&path, bytes) {
-                Ok(()) => written.push(path),
-                Err(e) => {
-                    app.show_toast(format!("Export failed: {e}"), true);
+        let (file, id, s) = jobs.into_iter().next().expect("len == 1");
+        let label = s.format.label();
+        let ext = s.format.extension();
+        let file_name = file.clone();
+        app.pick_file_async(
+            move || rfd::FileDialog::new().add_filter(label, &[ext]).set_file_name(file_name).save_file(),
+            move |app, path| {
+                let bytes = s.render(&app.doc, id);
+                if bytes.is_empty() {
+                    app.show_toast("Nothing to export", true);
                     return;
                 }
-            }
-        }
-    }
-    match written.as_slice() {
-        [one] => app.show_toast(format!("Exported {}", one.display()), false),
-        many => app.show_toast(format!("Exported {} files", many.len()), false),
+                match std::fs::write(&path, bytes) {
+                    Ok(()) => app.show_toast(format!("Exported {}", path.display()), false),
+                    Err(e) => app.show_toast(format!("Export failed: {e}"), true),
+                }
+            },
+        );
+    } else {
+        app.pick_file_async(
+            || rfd::FileDialog::new().set_title("Choose export folder").pick_folder(),
+            move |app, dir| {
+                let mut written = Vec::new();
+                for (file, id, s) in &jobs {
+                    let bytes = s.render(&app.doc, *id);
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    let path = dir.join(file);
+                    match std::fs::write(&path, bytes) {
+                        Ok(()) => written.push(path),
+                        Err(e) => {
+                            app.show_toast(format!("Export failed: {e}"), true);
+                            return;
+                        }
+                    }
+                }
+                match written.as_slice() {
+                    [one] => app.show_toast(format!("Exported {}", one.display()), false),
+                    many => app.show_toast(format!("Exported {} files", many.len()), false),
+                }
+            },
+        );
     }
 }
 
