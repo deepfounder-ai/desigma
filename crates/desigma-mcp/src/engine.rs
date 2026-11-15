@@ -32,6 +32,12 @@ pub trait Host {
     /// reservation the `desigma_doc` component helpers do before they return
     /// their command. Callers must always follow it with an undoable insert.
     fn doc_mut(&mut self) -> &mut Document;
+    /// Runs a command the component helpers built (a sync, a detach). Its updates are the
+    /// main component's state arriving at the instances, not edits by the caller, so they must
+    /// not be recorded as overrides the way [`Host::exec`] records an edit.
+    fn exec_derived(&mut self, cmd: Command) -> Result<(), String> {
+        self.exec(cmd)
+    }
 }
 
 impl Host for Engine {
@@ -42,6 +48,10 @@ impl Host for Engine {
         // Same preparation the editor does before committing: mirrored-node
         // edits become overrides, main-component edits re-sync their instances.
         let cmd = desigma_engine::components::prepare(&mut self.doc, cmd);
+        self.history.exec(&mut self.doc, cmd).map_err(|e| e.to_string())
+    }
+    fn exec_derived(&mut self, cmd: Command) -> Result<(), String> {
+        let cmd = desigma_engine::components::with_sync(&mut self.doc, cmd);
         self.history.exec(&mut self.doc, cmd).map_err(|e| e.to_string())
     }
     fn undo(&mut self) -> Result<bool, String> {
@@ -265,7 +275,7 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
                 return Err("only instances can be detached".into());
             }
             let cmd = desigma_doc::detach_instance(host.doc_mut(), NodeId(a.node_id));
-            host.exec(cmd)?;
+            host.exec_derived(cmd)?;
             Ok(json!({"node_id":a.node_id,"detached":true}))
         }
         "desigma_sync_instances" => {
@@ -280,7 +290,7 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             if is_noop(&cmd) {
                 return Ok(json!({"component_id":a.component_id,"synced":true,"changed":false}));
             }
-            host.exec(cmd)?;
+            host.exec_derived(cmd)?;
             Ok(json!({"component_id":a.component_id,"synced":true,"changed":true}))
         }
         "desigma_rename_page" => {

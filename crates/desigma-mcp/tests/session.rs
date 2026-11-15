@@ -326,3 +326,28 @@ fn list_files_shows_library_designs_and_outside_copies() {
     session.call("desigma_open_file", json!({"path": outside["path"]})).unwrap();
     assert_eq!(session.call("desigma_get_document", json!({})).unwrap()["name"], "Poster");
 }
+
+/// An explicit sync brings the main component's state to its instances; that is not an edit of
+/// the instance, so the next change to the main must still reach it.
+#[test]
+fn an_explicit_sync_does_not_turn_what_it_synced_into_overrides() {
+    use desigma_doc::{Color, NodeId, Paint};
+    let mut e = desigma_mcp::engine::Engine::default();
+    let id = |v: &serde_json::Value, k: &str| v[k].as_u64().or_else(|| v["node"]["id"].as_u64()).unwrap();
+    let main = id(&e.call("desigma_create_node", json!({"parent_id":1,"kind":"frame","name":"main"})).unwrap(), "");
+    let rect = id(&e.call("desigma_create_node", json!({"parent_id":main,"kind":"rectangle","name":"r","width":10,"height":10})).unwrap(), "");
+    e.call("desigma_create_component", json!({"node_id":main})).unwrap();
+    let inst = id(&e.call("desigma_create_instance", json!({"component_id":main,"parent_id":1})).unwrap(), "instance_id");
+    let child = e.doc.get(NodeId(inst)).unwrap().children[0];
+    // the main changed behind the session's back, as in a file whose instances are stale
+    e.doc.get_mut(NodeId(rect)).unwrap().fills = vec![Paint::solid(Color::from_hex("#ff0000").unwrap())];
+    assert_eq!(e.call("desigma_sync_instances", json!({"component_id":main})).unwrap()["changed"], true);
+    assert_eq!(e.doc.get(child).unwrap().fills, e.doc.get(NodeId(rect)).unwrap().fills, "the sync reached the instance");
+    assert!(e.doc.get(child).unwrap().component.overrides.is_empty(), "and left no override behind");
+    e.call("desigma_set_appearance", json!({"node_id":rect,"fill":"#00ff00"})).unwrap();
+    assert_eq!(e.doc.get(child).unwrap().fills, e.doc.get(NodeId(rect)).unwrap().fills, "the next edit of the main still reaches it");
+    // an edit of the instance itself is an override, and survives
+    e.call("desigma_set_appearance", json!({"node_id":child.0,"fill":"#0000ff"})).unwrap();
+    e.call("desigma_set_appearance", json!({"node_id":rect,"fill":"#ffffff"})).unwrap();
+    assert_ne!(e.doc.get(child).unwrap().fills, e.doc.get(NodeId(rect)).unwrap().fills, "the instance keeps its own fill");
+}
