@@ -40,6 +40,39 @@ impl Drop for Workspace {
     }
 }
 
+/// A refused path names the path it resolved, the workspace it fell outside of
+/// and how to widen it: an agent that was pointed at the wrong directory needs
+/// all three, not just "refused".
+#[test]
+fn a_path_outside_the_workspace_says_where_the_workspace_ends() {
+    let dir = Workspace::new();
+    let mut s = Session::with_discovery(&dir.0, None).unwrap();
+    let sibling = dir.0.parent().unwrap().join(format!("desigma-mcp-outside-{}.desigma", unique_suffix()));
+    fs::write(&sibling, "{}").unwrap();
+    let name = sibling.file_name().unwrap().to_str().unwrap().to_owned();
+    let resolved = sibling.canonicalize().unwrap().display().to_string();
+    let workspace = dir.0.canonicalize().unwrap().display().to_string();
+
+    let refused = s.call("desigma_open_file", json!({"path": format!("../{name}")})).unwrap_err();
+    assert!(refused.contains(&resolved), "the message names the resolved path: {refused}");
+    assert!(refused.contains(&workspace), "and the workspace it fell outside of: {refused}");
+    assert!(refused.contains("--workspace"), "and how to allow it: {refused}");
+
+    // Saving and exporting name the directory that fell outside, since that is
+    // what the check resolves.
+    let refused = s.call("desigma_save_file", json!({"path": format!("../{name}")})).unwrap_err();
+    assert!(refused.contains(&workspace) && refused.contains("--workspace"), "{refused}");
+
+    let refused = s.call("desigma_export_image", json!({"node_id":1,"path":format!("../{name}.png")})).unwrap_err();
+    assert!(refused.contains("--workspace"), "{refused}");
+
+    // A workspace that does not exist is named too, rather than a bare errno.
+    let missing = dir.0.join("no-such-dir");
+    let refused = Session::with_discovery(&missing, None).err().expect("a missing workspace is refused");
+    assert!(refused.contains("no-such-dir"), "{refused}");
+    let _ = fs::remove_file(&sibling);
+}
+
 #[test]
 fn saved_file_roundtrip_and_unsaved_changes_guard() {
     let dir = Workspace::new();

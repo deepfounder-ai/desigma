@@ -68,17 +68,25 @@ impl Session {
     /// for a running editor). Tests use this to avoid ever touching a real
     /// developer's editor, which the default `new` would otherwise do.
     pub fn with_discovery(root: &Path, discovery: Option<PathBuf>) -> Result<Self, String> {
-        let root = root.canonicalize().map_err(|e| format!("Cannot open workspace: {e}"))?;
+        let root = root.canonicalize().map_err(|e| format!("Cannot open workspace {}: {e}", root.display()))?;
         if !root.is_dir() {
-            return Err("Workspace must be a directory".into());
+            return Err(format!("Workspace {} must be a directory", root.display()));
         }
         Ok(Self { engine: Engine::default(), root, dirty: false, discovery, mode: None, path: None })
+    }
+
+    /// Refusal shared by every path check: it names the path that was resolved
+    /// and the workspace it fell outside of, and says how to allow it. An agent
+    /// that passes a path from another tree otherwise only learns that it was
+    /// refused, not which directory the server was pointed at.
+    fn outside_workspace(&self, path: &Path) -> String {
+        format!("{} is outside the workspace {}; start desigma-mcp with --workspace DIRECTORY to allow another directory", path.display(), self.root.display())
     }
 
     fn input_path(&self, path: &str) -> Result<PathBuf, String> {
         let path = self.root.join(path).canonicalize().map_err(|e| format!("Cannot open path: {e}"))?;
         if !path.starts_with(&self.root) {
-            return Err("Path must stay inside the configured workspace".into());
+            return Err(self.outside_workspace(&path));
         }
         if !path.is_file() {
             return Err("Expected a file path".into());
@@ -94,7 +102,7 @@ impl Session {
         let parent =
             requested.parent().ok_or("Save path needs a parent directory")?.canonicalize().map_err(|e| format!("Save directory must already exist: {e}"))?;
         if !parent.starts_with(&self.root) {
-            return Err("Path must stay inside the configured workspace".into());
+            return Err(self.outside_workspace(&parent));
         }
         Ok(parent.join(requested.file_name().ok_or("Save path needs a filename")?))
     }
@@ -116,7 +124,7 @@ impl Session {
             .canonicalize()
             .map_err(|e| format!("Export directory must already exist: {e}"))?;
         if !parent.starts_with(&self.root) {
-            return Err("Path must stay inside the configured workspace".into());
+            return Err(self.outside_workspace(&parent));
         }
         let resolved = parent.join(requested.file_name().ok_or("Export path needs a filename")?);
         // Overwrite is allowed, but only of a plain file we already own: a
