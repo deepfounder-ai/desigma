@@ -10,6 +10,7 @@ server = ["dep:rmcp", "dep:tokio"]
 
 [dependencies]
 desigma-doc.workspace = true
+desigma-engine.workspace = true
 desigma-export.workspace = true
 desigma-svg.workspace = true
 desigma-library.workspace = true

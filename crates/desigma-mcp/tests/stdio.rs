@@ -16,10 +16,11 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
         let schema = tools.iter().find(|t| t.name == "desigma_delete_page").unwrap().input_schema.clone();
         assert_eq!(schema["properties"]["node_id"]["type"], "integer");
-        assert_eq!(tools.len(), 27);
-        assert_eq!(tools.len(), 27);
-        assert_eq!(tools.len(), 27);
-        assert_eq!(tools.len(), 27);
+        // 27 upstream tools + 5 for components, instances and page rename
+        for name in ["desigma_create_component", "desigma_create_instance", "desigma_detach_instance", "desigma_sync_instances", "desigma_rename_page"] {
+            assert!(tools.iter().any(|t| t.name == name), "missing component tool {name}");
+        }
+        assert_eq!(tools.len(), 32);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -384,4 +385,186 @@ fn batched_requests_run_in_order() {
     let _ = child.kill();
     let _ = child.wait();
     assert_eq!(ids, (0..=N).collect::<Vec<_>>(), "responses come back in request order");
+}
+
+/// The component, instance and page-rename tools, round trip through a real
+/// MCP subprocess: the main component and its instances, detach, sync, rename.
+#[tokio::test]
+async fn components_instances_and_page_rename_round_trip() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+
+        let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        let page = doc.structured_content.unwrap()["pages"][0]["node_id"].clone();
+
+        // A frame becomes a main component in place, and can be renamed.
+        let card =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"card","width":400,"height":200}))).await.unwrap();
+        let card_id = card.structured_content.unwrap()["node"]["id"].clone();
+        let comp = client.call_tool(call("desigma_create_component", json!({"node_id":card_id,"name":"CardMain"}))).await.unwrap();
+        assert_eq!(comp.is_error, Some(false), "{comp:?}");
+        let comp_sc = comp.structured_content.unwrap();
+        assert_eq!(comp_sc["component_id"], card_id);
+        assert_eq!(comp_sc["node"]["name"], "CardMain");
+
+        // Negative: a rectangle is not a layer that can become a component.
+        let rect =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"rectangle","name":"row","width":100,"height":40}))).await.unwrap();
+        let rect_id = rect.structured_content.unwrap()["node"]["id"].clone();
+        let refused = client.call_tool(call("desigma_create_component", json!({"node_id":rect_id}))).await.unwrap();
+        assert_eq!(refused.is_error, Some(true));
+
+        // Instances go into a frame or straight onto a page.
+        let host =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"host","width":600,"height":400}))).await.unwrap();
+        let host_id = host.structured_content.unwrap()["node"]["id"].clone();
+        // Negative: the parent is the component itself, which would refer to itself.
+        let bad_parent = client.call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":card_id,"x":0.0,"y":0.0}))).await.unwrap();
+        assert_eq!(bad_parent.is_error, Some(true), "a component cannot be instantiated inside itself");
+        // Negative: a plain layer is not a main component.
+        let bad_component =
+            client.call_tool(call("desigma_create_instance", json!({"component_id":rect_id,"parent_id":host_id,"x":0.0,"y":0.0}))).await.unwrap();
+        assert_eq!(bad_component.is_error, Some(true), "a rectangle is not a main component");
+        let inst = client.call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":host_id,"x":12.0,"y":24.0}))).await.unwrap();
+        assert_eq!(inst.is_error, Some(false), "{inst:?}");
+        let instance_id = inst.structured_content.unwrap()["instance_id"].clone();
+        assert!(instance_id.as_u64().is_some());
+
+        // Sync: the main component's current state reaches every instance.
+        let synced = client.call_tool(call("desigma_sync_instances", json!({"component_id":card_id}))).await.unwrap();
+        assert_eq!(synced.is_error, Some(false), "{synced:?}");
+        assert_eq!(synced.structured_content.unwrap()["synced"], true);
+        // Negative: a plain layer is not a component to sync from.
+        let bad_sync = client.call_tool(call("desigma_sync_instances", json!({"component_id":rect_id}))).await.unwrap();
+        assert_eq!(bad_sync.is_error, Some(true));
+
+        // Detach turns the instance into ordinary layers, and undoes.
+        let detached = client.call_tool(call("desigma_detach_instance", json!({"node_id":instance_id}))).await.unwrap();
+        assert_eq!(detached.is_error, Some(false), "{detached:?}");
+        assert_eq!(detached.structured_content.unwrap()["detached"], true);
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let still_instance = client.call_tool(call("desigma_get_node", json!({"node_id":instance_id}))).await.unwrap();
+        assert_eq!(still_instance.is_error, Some(false), "undoing the detach brings the instance back");
+
+        // Renaming a page undoes.
+        let before = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        let old_name = before.structured_content.unwrap()["pages"][0]["name"].clone();
+        let renamed = client.call_tool(call("desigma_rename_page", json!({"page_id":page,"name":"Renamed"}))).await.unwrap();
+        assert_eq!(renamed.is_error, Some(false), "{renamed:?}");
+        let after = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        assert_eq!(after.structured_content.unwrap()["pages"][0]["name"], "Renamed");
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let undone = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        assert_eq!(undone.structured_content.unwrap()["pages"][0]["name"], old_name);
+        // Negative: a blank name is refused, as create_page refuses it.
+        let blank = client.call_tool(call("desigma_rename_page", json!({"page_id":page,"name":"   "}))).await.unwrap();
+        assert_eq!(blank.is_error, Some(true));
+        // Negative: a non-page node cannot be renamed as a page.
+        let not_page = client.call_tool(call("desigma_rename_page", json!({"page_id":rect_id,"name":"x"}))).await.unwrap();
+        assert_eq!(not_page.is_error, Some(true));
+
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
+/// A file session must keep instance edits as overrides, let main-component
+/// edits reach their instances in the same undo step, and not push an empty
+/// undo step when a sync has nothing to do.
+#[tokio::test]
+async fn instance_overrides_survive_sync_and_main_edits_follow() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+
+        let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        let page = doc.structured_content.unwrap()["pages"][0]["node_id"].clone();
+
+        // Main component: a frame with the rectangles `a` and `b` inside.
+        let card =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"card","width":200,"height":100}))).await.unwrap();
+        let card_id = card.structured_content.unwrap()["node"]["id"].clone();
+        let main_a =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":card_id,"kind":"rectangle","name":"a","width":40,"height":40}))).await.unwrap();
+        let main_a_id = main_a.structured_content.unwrap()["node"]["id"].clone();
+        let main_b = client
+            .call_tool(call("desigma_create_node", json!({"parent_id":card_id,"kind":"rectangle","name":"b","x":50.0,"width":40,"height":40})))
+            .await
+            .unwrap();
+        let main_b_id = main_b.structured_content.unwrap()["node"]["id"].clone();
+        let comp = client.call_tool(call("desigma_create_component", json!({"node_id":card_id}))).await.unwrap();
+        assert_eq!(comp.is_error, Some(false), "{comp:?}");
+
+        let host =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"host","width":600,"height":400}))).await.unwrap();
+        let host_id = host.structured_content.unwrap()["node"]["id"].clone();
+        let inst = client.call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":host_id}))).await.unwrap();
+        assert_eq!(inst.is_error, Some(false), "{inst:?}");
+        let instance_id = inst.structured_content.unwrap()["instance_id"].clone();
+
+        // The mirrored children keep their names, so they can be addressed.
+        let kids = client.call_tool(call("desigma_list_nodes", json!({"parent_id":instance_id}))).await.unwrap();
+        let kids = kids.structured_content.unwrap()["nodes"].as_array().cloned().unwrap();
+        let mirror = |name: &str| kids.iter().find(|n| n["name"] == name).expect("mirrored child")["node_id"].clone();
+        let mirror_a_id = mirror("a");
+        let mirror_b_id = mirror("b");
+
+        // An edit inside the instance is an override, not a lost edit.
+        let edited = client.call_tool(call("desigma_set_appearance", json!({"node_id":mirror_a_id,"fill":"#00ff00"}))).await.unwrap();
+        assert_eq!(edited.is_error, Some(false), "{edited:?}");
+        let overridden = client.call_tool(call("desigma_get_node", json!({"node_id":mirror_a_id}))).await.unwrap();
+        let overridden = overridden.structured_content.unwrap()["node"].clone();
+        let green = overridden["fills"].clone();
+        assert!(
+            overridden["component"]["overrides"].as_array().unwrap().iter().any(|f| f == "Fills"),
+            "the edit must be recorded as an override: {overridden}"
+        );
+
+        // A manual sync keeps it and does not clobber the fill.
+        let synced = client.call_tool(call("desigma_sync_instances", json!({"component_id":card_id}))).await.unwrap();
+        assert_eq!(synced.is_error, Some(false), "{synced:?}");
+        let after_sync = client.call_tool(call("desigma_get_node", json!({"node_id":mirror_a_id}))).await.unwrap();
+        assert_eq!(after_sync.structured_content.unwrap()["node"]["fills"], green, "sync must keep the override");
+
+        // Editing the main reaches the instances without an explicit sync, and
+        // still leaves the overridden child alone.
+        let main_edited = client.call_tool(call("desigma_set_appearance", json!({"node_id":main_b_id,"fill":"#0000ff"}))).await.unwrap();
+        assert_eq!(main_edited.is_error, Some(false), "{main_edited:?}");
+        let followed = client.call_tool(call("desigma_get_node", json!({"node_id":mirror_b_id}))).await.unwrap();
+        let main_now = client.call_tool(call("desigma_get_node", json!({"node_id":main_b_id}))).await.unwrap();
+        assert_eq!(
+            followed.structured_content.unwrap()["node"]["fills"],
+            main_now.structured_content.unwrap()["node"]["fills"],
+            "the instance follows an edit to the main component"
+        );
+        let kept = client.call_tool(call("desigma_get_node", json!({"node_id":mirror_a_id}))).await.unwrap();
+        assert_eq!(kept.structured_content.unwrap()["node"]["fills"], green, "the override survives the main edit");
+        let main_a_now = client.call_tool(call("desigma_get_node", json!({"node_id":main_a_id}))).await.unwrap();
+        assert_ne!(main_a_now.structured_content.unwrap()["node"]["fills"], green, "the override stays on the instance only");
+
+        // A component nobody instanced: nothing to sync, nothing to undo.
+        let lonely =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"lonely","width":80,"height":80}))).await.unwrap();
+        let lonely_id = lonely.structured_content.unwrap()["node"]["id"].clone();
+        client.call_tool(call("desigma_create_component", json!({"node_id":lonely_id}))).await.unwrap();
+        let nothing = client.call_tool(call("desigma_sync_instances", json!({"component_id":lonely_id}))).await.unwrap();
+        assert_eq!(nothing.is_error, Some(false), "{nothing:?}");
+        assert_eq!(nothing.structured_content.unwrap()["changed"], false, "an empty sync must not push an undo step");
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let reverted = client.call_tool(call("desigma_get_node", json!({"node_id":lonely_id}))).await.unwrap();
+        let kind = reverted.structured_content.unwrap()["node"]["kind"].clone();
+        assert!(kind.get("Frame").is_some(), "undo must reach the conversion, not a no-op sync: {kind}");
+
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
 }

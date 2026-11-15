@@ -67,6 +67,12 @@ Edits remain in memory until saved. Restarting the server loses unsaved work. Op
 
 Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nesting. The server validates the imported document graph before using it, rejecting malformed parent/child relationships and cycles.
 
+## Generating code or reading the node tree
+
+`desigma_generate_code` answers "what should this look like"; the node tree answers "what does this project already have". Use the generator when a finished layer has to be handed off (`css` and `tailwind` for web, `compose` and `swiftui` for native, `svg` for icons), or when you want a diffable second opinion on geometry and typography. Read `desigma_get_node` and write the code yourself when the target is an existing component with its own API (a `Button / Primary` layer is a `PrimaryButton(size: md)`, not a styled container — the mapping lives in its name and its bindings, which the generator does not know), when the work spans more than one layer, or when layout semantics matter: generated code flattens auto layout, `layout_child` and constraints into absolute numbers. A practical split is to read the tree to decide what to build, generate code for layers that do not exist in the codebase yet, and write the parts that plug into existing components and tokens by hand.
+
+[`docs/agent-workflows.md`](../../docs/agent-workflows.md) describes the loop one team runs this in — workspace conventions, save and revision habits, component and override rules — with a sanitised example document in `docs/examples/button-kit.desigma`.
+
 ## Tools
 
 | Tool | Purpose |
@@ -104,7 +110,7 @@ Turn the bridge on in **Preferences → Allow MCP agents to control this editor*
 
 The server shares Desigma's importers, document types, variables, undo commands, and exporters. Code generation resolves bound variable values. Import and generated-code fidelity follow the underlying Desigma implementations; generated source is a handoff starting point.
 
-In an isolated file session, layer edits do not run the desktop application's auto-layout reflow, text measurement, connector rerouting, or component-instance synchronization; do not assume that resizing a container rearranges its children or that editing a component updates every instance. With the agent bridge on, edits run through the editor's transactions and are laid out like the editor's own edits (auto-layout reflow, group fit, connector rerouting, component-instance sync). Editing token definitions or arbitrary paint properties is not exposed in this version.
+In an isolated file session, layer edits do not run the desktop application's auto-layout reflow, text measurement or connector rerouting, so do not assume that resizing a container rearranges its children. Component edits do follow the editor's rules: a change to a layer inside an instance is recorded as an override on that layer, and a change to a main component re-syncs its instances, both in the same undo step. With the agent bridge on, edits run through the editor's transactions and are laid out like the editor's own edits (auto-layout reflow, group fit, connector rerouting, component-instance sync). Editing token definitions or arbitrary paint properties is not exposed in this version.
 
 ## Verification and evaluation
 
