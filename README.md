@@ -360,7 +360,7 @@ desigma-diff compare reference.png actual.png --out diff.png   # pixel-compare t
 
 ## MCP integration
 
-Build the local server with `cargo build --locked -p desigma-mcp`, then configure your MCP client to launch `desigma-mcp --workspace /path/to/designs`. It provides 16 tools for importing files, inspecting layers and tokens, generating code, editing with undo/redo, and saving a new `.desigma` file. With the editor's agent bridge on (Preferences → **Allow MCP agents to control this editor**, or launch with `desigma --bridge`), the same tools edit the document that is open on screen and share its Undo; a status pill shows while the bridge is on. Without a running editor the server works on an isolated file session as before. See the [setup and tool reference](crates/desigma-mcp/README.md).
+Build the local server with `cargo build --locked -p desigma-mcp`, then configure your MCP client to launch `desigma-mcp --workspace /path/to/designs`. It provides 16 tools for importing files, inspecting layers and tokens, generating code, editing with undo/redo, and saving a new `.desigma` file. With the editor's agent bridge on (Preferences → **Allow MCP agents to control this editor**, or launch with `desigma --bridge`), the same tools edit the document that is open on screen and share its Undo; a status pill shows while the bridge is on. Without a running editor the server works on an isolated file session as before. See the [setup and tool reference](crates/desigma-mcp/README.md), and [how an agent drives it](docs/agent-workflows.md) for workspace conventions, when to generate code instead of reading the node tree, and an example document.
 
 ## Native plugin installation
 

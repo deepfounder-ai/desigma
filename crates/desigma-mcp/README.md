@@ -67,6 +67,12 @@ Edits remain in memory until saved. Restarting the server loses unsaved work. Op
 
 Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nesting. The server validates the imported document graph before using it, rejecting malformed parent/child relationships and cycles.
 
+## Generating code or reading the node tree
+
+`desigma_generate_code` answers "what should this look like"; the node tree answers "what does this project already have". Use the generator when a finished layer has to be handed off (`css` and `tailwind` for web, `compose` and `swiftui` for native, `svg` for icons), or when you want a diffable second opinion on geometry and typography. Read `desigma_get_node` and write the code yourself when the target is an existing component with its own API (a `Button / Primary` layer is a `PrimaryButton(size: md)`, not a styled container — the mapping lives in its name and its bindings, which the generator does not know), when the work spans more than one layer, or when layout semantics matter: generated code flattens auto layout, `layout_child` and constraints into absolute numbers. A practical split is to read the tree to decide what to build, generate code for layers that do not exist in the codebase yet, and write the parts that plug into existing components and tokens by hand.
+
+[`docs/agent-workflows.md`](../../docs/agent-workflows.md) describes the loop one team runs this in — workspace conventions, save and revision habits, component and override rules — with a sanitised example document in `docs/examples/button-kit.desigma`.
+
 ## Tools
 
 | Tool | Purpose |
