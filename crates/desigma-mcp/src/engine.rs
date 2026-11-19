@@ -1,5 +1,8 @@
 //! Typed, local document operations shared by the MCP transport and future bridges.
-use desigma_doc::{Color, Command, Document, History, LineHeight, Node, NodeId, NodeKind, Paint, Rect, TextAlignH, TextAlignV, TextStyle};
+use desigma_doc::{
+    Color, Command, Document, History, LineHeight, Node, NodeId, NodeKind, Paint, Rect, TextAlignH, TextAlignV, TextStyle, VariableKind, VariableStore,
+    VariableValue,
+};
 use desigma_svg::ImportOptions;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
@@ -90,6 +93,10 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_move_node",
     "desigma_set_appearance",
     "desigma_set_text_style",
+    "desigma_create_variable_collection",
+    "desigma_add_variable_mode",
+    "desigma_create_variable",
+    "desigma_set_variable_value",
     "desigma_import_svg",
     "desigma_delete_node",
     "desigma_delete_page",
@@ -166,6 +173,10 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             };
             Ok(json!({"variables":host.doc().variables,"collections":host.doc().variable_collections,"effective_bindings":effective}))
         }
+        "desigma_create_variable_collection" => create_variable_collection(host, parse(args)?),
+        "desigma_add_variable_mode" => add_variable_mode(host, parse(args)?),
+        "desigma_create_variable" => create_variable(host, parse(args)?),
+        "desigma_set_variable_value" => set_variable_value(host, parse(args)?),
         "desigma_generate_code" => {
             let a: CodeArgs = parse(args)?;
             let id = node(host, a.node_id)?.id;
@@ -734,6 +745,212 @@ fn set_text_style<H: Host>(host: &mut H, a: TextStyleArgs) -> Result<Value, Stri
     commit(host, node, applied)
 }
 
+fn variable_kind(field: &str) -> Result<VariableKind, String> {
+    match field {
+        "color" => Ok(VariableKind::Color),
+        "number" => Ok(VariableKind::Number),
+        "string" => Ok(VariableKind::String),
+        "boolean" => Ok(VariableKind::Boolean),
+        _ => Err(format!("kind must be color, number, string, or boolean, got {field}")),
+    }
+}
+
+fn non_empty_name(field: &str, value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    bounded_text(field, value, 1024)?;
+    Ok(value.to_string())
+}
+
+fn variable_mode_id(store: &VariableStore, collection: &str, key: &str) -> Result<String, String> {
+    let c = store.collections.get(collection).ok_or_else(|| format!("variable collection {collection} not found"))?;
+    if let Some(mode) = c.modes.iter().find(|m| m.id == key) {
+        return Ok(mode.id.clone());
+    }
+    let matches: Vec<_> = c.modes.iter().filter(|m| m.name == key).collect();
+    match matches.as_slice() {
+        [mode] => Ok(mode.id.clone()),
+        [] => {
+            Err(format!("mode '{key}' not found in collection '{}'; modes: {}", c.name, c.modes.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ")))
+        }
+        _ => Err(format!("mode name '{key}' is ambiguous in collection '{}'; pass a mode id", c.name)),
+    }
+}
+
+fn parse_variable_value(kind: VariableKind, value: &Value) -> Result<VariableValue, String> {
+    if let Some(obj) = value.as_object() {
+        if obj.len() == 1 {
+            if let Some(alias) = obj.get("alias") {
+                let alias = alias.as_str().ok_or("alias must be a variable id string")?;
+                if alias.trim().is_empty() {
+                    return Err("alias must not be empty".into());
+                }
+                return Ok(VariableValue::Alias(alias.to_string()));
+            }
+        }
+        return Err("value must be a literal for the variable kind or {\"alias\":\"variable_id\"}".into());
+    }
+    match kind {
+        VariableKind::Color => {
+            let spec = value.as_str().ok_or("color value must be a hex string")?;
+            let color = Color::from_hex(spec).ok_or_else(|| format!("invalid color value '{spec}' (use #RGB, #RRGGBB or #RRGGBBAA)"))?;
+            Ok(VariableValue::Color(color))
+        }
+        VariableKind::Number => {
+            let number = value.as_f64().ok_or("number value must be a number")?;
+            if !number.is_finite() || number.abs() > 1e9 {
+                return Err("number value must be finite and within ±1e9".into());
+            }
+            Ok(VariableValue::Number(number as f32))
+        }
+        VariableKind::String => Ok(VariableValue::String(value.as_str().ok_or("string value must be a string")?.to_string())),
+        VariableKind::Boolean => Ok(VariableValue::Boolean(value.as_bool().ok_or("boolean value must be true or false")?)),
+    }
+}
+
+fn set_variable_in_store(store: &mut VariableStore, variable: &str, kind: VariableKind, mode: &str, value: &Value) -> Result<(), String> {
+    match parse_variable_value(kind, value)? {
+        VariableValue::Alias(target) => {
+            if store.set_alias(variable, mode, &target) {
+                Ok(())
+            } else {
+                Err("alias must point at a different variable of the same kind without a cycle".into())
+            }
+        }
+        literal => {
+            if store.set_value(variable, mode, literal) {
+                Ok(())
+            } else {
+                Err(format!("value does not match variable kind {kind:?}"))
+            }
+        }
+    }
+}
+
+/// Installs a working-copy variable store as one undo step, unless it is unchanged.
+fn commit_variables<H: Host>(host: &mut H, store: VariableStore) -> Result<bool, String> {
+    if store.matches_doc(host.doc()) {
+        return Ok(false);
+    }
+    host.exec(store.command())?;
+    Ok(true)
+}
+
+fn create_variable_collection<H: Host>(host: &mut H, a: CreateVariableCollectionArgs) -> Result<Value, String> {
+    let name = non_empty_name("name", &a.name)?;
+    let modes: Vec<String> = match a.modes {
+        None => vec!["Mode 1".into()],
+        Some(modes) => {
+            if modes.is_empty() {
+                return Err("modes must contain at least one mode".into());
+            }
+            let mut out = Vec::new();
+            for mode in modes {
+                let mode = non_empty_name("mode name", &mode)?;
+                if out.contains(&mode) {
+                    return Err(format!("duplicate mode name '{mode}'"));
+                }
+                out.push(mode);
+            }
+            out
+        }
+    };
+    let mut store = VariableStore::from_doc(host.doc());
+    let collection = store.add_collection(&name);
+    if let Some(c) = store.collections.get_mut(&collection) {
+        if let Some(first) = c.modes.first_mut() {
+            first.name = modes[0].clone();
+        }
+    } else {
+        return Err("cannot create variable collection".into());
+    }
+    for mode in &modes[1..] {
+        if store.add_mode(&collection, mode).is_none() {
+            return Err(format!("cannot add mode '{mode}'"));
+        }
+    }
+    if let Some(default_mode) = a.default_mode.as_deref() {
+        let mode = variable_mode_id(&store, &collection, default_mode)?;
+        store.set_default_mode(&collection, &mode);
+    }
+    let changed = commit_variables(host, store)?;
+    Ok(json!({"collection":host.doc().variable_collections.get(&collection),"changed":changed}))
+}
+
+fn add_variable_mode<H: Host>(host: &mut H, a: AddVariableModeArgs) -> Result<Value, String> {
+    let name = non_empty_name("name", &a.name)?;
+    let mut store = VariableStore::from_doc(host.doc());
+    let collection = store.collections.get(&a.collection_id).ok_or_else(|| format!("variable collection {} not found", a.collection_id))?;
+    if collection.modes.iter().any(|m| m.name == name) {
+        return Err(format!("mode '{name}' already exists in collection '{}'", collection.name));
+    }
+    let mode = store.add_mode(&a.collection_id, &name).ok_or("cannot add variable mode")?;
+    let changed = commit_variables(host, store)?;
+    let mode = host.doc().variable_collections.get(&a.collection_id).and_then(|c| c.modes.iter().find(|m| m.id == mode));
+    Ok(json!({"collection_id":a.collection_id,"mode":mode,"changed":changed}))
+}
+
+fn create_variable<H: Host>(host: &mut H, a: CreateVariableArgs) -> Result<Value, String> {
+    let name = non_empty_name("name", &a.name)?;
+    let kind = variable_kind(&a.kind)?;
+    let mut store = VariableStore::from_doc(host.doc());
+    let collection_name =
+        store.collections.get(&a.collection_id).map(|c| c.name.clone()).ok_or_else(|| format!("variable collection {} not found", a.collection_id))?;
+    let variable = store.add_variable(&a.collection_id, &name, kind).ok_or_else(|| format!("cannot create variable in collection '{collection_name}'"))?;
+    if let Some(description) = a.description {
+        bounded_text("description", &description, 100_000)?;
+        if let Some(v) = store.variables.get_mut(&variable) {
+            v.description = description;
+        }
+    }
+    if let Some(scopes) = a.scopes {
+        let mut out = Vec::new();
+        for scope in scopes {
+            let scope = scope.trim();
+            if scope.is_empty() {
+                return Err("scopes must not contain empty strings".into());
+            }
+            bounded_text("scope", scope, 256)?;
+            out.push(scope.to_string());
+        }
+        if let Some(v) = store.variables.get_mut(&variable) {
+            v.scopes = out;
+        }
+    }
+    if let Some(values) = a.values {
+        let values = values.as_object().ok_or("values must be an object mapping mode names or ids to values")?;
+        let mut seen = Vec::new();
+        for (mode_key, value) in values {
+            let mode = variable_mode_id(&store, &a.collection_id, mode_key)?;
+            if seen.contains(&mode) {
+                return Err(format!("mode '{mode_key}' is specified more than once"));
+            }
+            seen.push(mode.clone());
+            set_variable_in_store(&mut store, &variable, kind, &mode, value)?;
+        }
+    }
+    let changed = commit_variables(host, store)?;
+    Ok(json!({"variable":host.doc().variables.get(&variable),"changed":changed}))
+}
+
+fn set_variable_value<H: Host>(host: &mut H, a: SetVariableValueArgs) -> Result<Value, String> {
+    let mut store = VariableStore::from_doc(host.doc());
+    let variable = store.variables.get(&a.variable_id).ok_or_else(|| format!("variable {} not found", a.variable_id))?;
+    let kind = variable.kind;
+    let collection = variable.collection.clone();
+    let default_mode = store.collections.get(&collection).map(|c| c.default_mode.clone()).unwrap_or_default();
+    let mode = match a.mode.as_deref() {
+        Some(key) => variable_mode_id(&store, &collection, key)?,
+        None => default_mode,
+    };
+    set_variable_in_store(&mut store, &a.variable_id, kind, &mode, &a.value)?;
+    let changed = commit_variables(host, store)?;
+    let value = host.doc().variables.get(&a.variable_id).and_then(|v| v.values.get(&mode));
+    Ok(json!({"variable_id":a.variable_id,"mode_id":mode,"value":value,"changed":changed}))
+}
+
 fn colour(spec: &str, field: &str) -> Result<Color, String> {
     Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid {field} colour: {spec} (use #RGB, #RRGGBB, #RRGGBBAA or none)"))
 }
@@ -815,6 +1032,46 @@ struct ListArgs {
 #[serde(deny_unknown_fields)]
 struct VariablesArgs {
     node_id: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateVariableCollectionArgs {
+    name: String,
+    /// Mode names; defaults to one mode named "Mode 1".
+    modes: Option<Vec<String>>,
+    /// Mode name or id; defaults to the first mode.
+    default_mode: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddVariableModeArgs {
+    collection_id: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateVariableArgs {
+    collection_id: String,
+    name: String,
+    /// color | number | string | boolean
+    kind: String,
+    description: Option<String>,
+    /// Figma scopes such as ALL_FILLS, GAP, CORNER_RADIUS; empty means all.
+    scopes: Option<Vec<String>>,
+    /// Mode name/id -> raw literal or {"alias":"variable_id"}.
+    values: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetVariableValueArgs {
+    variable_id: String,
+    /// Mode name or id; defaults to the collection's default mode.
+    mode: Option<String>,
+    value: Value,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1022,6 +1279,7 @@ pub fn tools() -> Vec<Value> {
     let size = json!({"type":"number","minimum":0,"maximum":1000000});
     let text = json!({"type":"string","maxLength":100000,"description":"Plain text; limited to 100000 UTF-8 bytes."});
     let name = json!({"type":"string","maxLength":1024,"description":"Layer name; limited to 1024 UTF-8 bytes."});
+    let variable_ref = json!({"type":"string","minLength":1,"maxLength":1024,"description":"Variable or collection ID returned by the variable tools."});
     let mut out = Vec::new();
     let mut add = |tool: &str, description: &str, properties: Value, required: Vec<&str>, read_only: bool, idempotent: bool| {
         out.push(json!({"name":format!("desigma_{tool}"),"description":description,
@@ -1044,6 +1302,38 @@ pub fn tools() -> Vec<Value> {
         json!({"node_id":id}),
         vec![],
         true,
+        true,
+    );
+    add(
+        "create_variable_collection",
+        "Create a variable collection with named modes. The first mode (default: \"Mode 1\") becomes the default; set default_mode to another mode name or id. Supports undo as one step; changes remain in memory until saved.",
+        json!({"name":{"type":"string","minLength":1,"maxLength":1024},"modes":{"type":"array","items":{"type":"string","minLength":1,"maxLength":1024},"minItems":1,"maxItems":32},"default_mode":{"type":"string","minLength":1,"maxLength":1024}}),
+        vec!["name"],
+        false,
+        false,
+    );
+    add(
+        "add_variable_mode",
+        "Append a mode to a variable collection. Existing variables receive the collection's default-mode value for the new mode. Supports undo as one step; changes remain in memory until saved.",
+        json!({"collection_id":variable_ref,"name":{"type":"string","minLength":1,"maxLength":1024}}),
+        vec!["collection_id", "name"],
+        false,
+        false,
+    );
+    add(
+        "create_variable",
+        "Create a color, number, string, or boolean variable in a collection. values maps a mode name or id to a literal for the kind (hex string, number, string, or boolean) or {\"alias\":\"variable_id\"}; omitted modes get the kind's default. Supports undo as one step; changes remain in memory until saved.",
+        json!({"collection_id":variable_ref,"name":{"type":"string","minLength":1,"maxLength":1024},"kind":{"type":"string","enum":["color","number","string","boolean"]},"description":{"type":"string","maxLength":100000},"scopes":{"type":"array","items":{"type":"string","maxLength":256},"maxItems":64},"values":{"type":"object","additionalProperties":true,"description":"Mode name/id -> literal or {\"alias\":\"variable_id\"}."}}),
+        vec!["collection_id", "name", "kind"],
+        false,
+        false,
+    );
+    add(
+        "set_variable_value",
+        "Set one mode's value for a variable. value is a literal for the variable's kind (hex string, number, string, or boolean) or {\"alias\":\"variable_id\"} for a same-kind alias without a cycle. mode defaults to the collection's default mode. Supports undo as one step; changes remain in memory until saved.",
+        json!({"variable_id":variable_ref,"mode":{"type":"string","minLength":1,"maxLength":1024},"value":{}}),
+        vec!["variable_id", "value"],
+        false,
         true,
     );
     add(
@@ -1305,6 +1595,102 @@ mod tests {
         assert_eq!(t["annotations"]["idempotentHint"], false);
         assert_eq!(t["inputSchema"]["required"], json!(["node_id"]));
         assert_eq!(t["inputSchema"]["properties"]["offset"]["maximum"], 100000);
+    }
+
+    #[test]
+    fn variable_store_creates_modes_values_and_aliases() {
+        let mut e = Engine::default();
+        let collection =
+            e.call("desigma_create_variable_collection", json!({"name":"Theme","modes":["Light","Dark"],"default_mode":"Dark"})).unwrap()["collection"].clone();
+        let collection_id = collection["id"].as_str().unwrap().to_string();
+        let mode_id = |name: &str| collection["modes"].as_array().unwrap().iter().find(|m| m["name"] == name).unwrap()["id"].as_str().unwrap().to_string();
+        let light = mode_id("Light");
+        let dark = mode_id("Dark");
+        assert_eq!(e.doc.variable_collections[&collection_id].default_mode, dark);
+
+        let variable = e
+            .call(
+                "desigma_create_variable",
+                json!({
+                    "collection_id":collection_id,
+                    "name":"Color/Brand/Primary",
+                    "kind":"color",
+                    "scopes":["ALL_FILLS"],
+                    "values":{"Light":"#2F5BFF","Dark":"#8AA2FF"}
+                }),
+            )
+            .unwrap()["variable"]
+            .clone();
+        let variable_id = variable["id"].as_str().unwrap().to_string();
+        let stored = &e.doc.variables[&variable_id];
+        assert_eq!(stored.scopes, vec!["ALL_FILLS"]);
+        assert_eq!(stored.values[&light], VariableValue::Color(Color::from_hex("#2F5BFF").unwrap()));
+        assert_eq!(stored.values[&dark], VariableValue::Color(Color::from_hex("#8AA2FF").unwrap()));
+
+        e.call("desigma_set_variable_value", json!({"variable_id":variable_id,"mode":"Light","value":"#FF6B4A"})).unwrap();
+        assert_eq!(e.doc.variables[&variable_id].values[&light], VariableValue::Color(Color::from_hex("#FF6B4A").unwrap()));
+        e.call("desigma_undo", json!({})).unwrap();
+        assert_eq!(e.doc.variables[&variable_id].values[&light], VariableValue::Color(Color::from_hex("#2F5BFF").unwrap()));
+        e.call("desigma_redo", json!({})).unwrap();
+        assert_eq!(e.doc.variables[&variable_id].values[&light], VariableValue::Color(Color::from_hex("#FF6B4A").unwrap()));
+
+        let alias = e
+            .call(
+                "desigma_create_variable",
+                json!({"collection_id":collection_id,"name":"Color/Action","kind":"color","values":{"Light":{"alias":variable_id}}}),
+            )
+            .unwrap()["variable"]
+            .clone();
+        let alias_id = alias["id"].as_str().unwrap().to_string();
+        assert_eq!(e.doc.variables[&alias_id].values[&light], VariableValue::Alias(variable_id.clone()));
+
+        let added = e.call("desigma_add_variable_mode", json!({"collection_id":collection_id,"name":"High contrast"})).unwrap();
+        let hc = added["mode"]["id"].as_str().unwrap().to_string();
+        assert_eq!(e.doc.variables[&variable_id].values[&hc], e.doc.variables[&variable_id].values[&dark]);
+
+        let unchanged = e.call("desigma_set_variable_value", json!({"variable_id":variable_id,"mode":"Light","value":"#FF6B4A"})).unwrap();
+        assert_eq!(unchanged["changed"], false);
+    }
+
+    #[test]
+    fn variable_store_rejects_invalid_input_without_touching_the_document() {
+        let mut e = Engine::default();
+        let collection = e.call("desigma_create_variable_collection", json!({"name":"Theme","modes":["Light","Dark"]})).unwrap()["collection"].clone();
+        let collection_id = collection["id"].as_str().unwrap().to_string();
+        let variable = e.call("desigma_create_variable", json!({"collection_id":collection_id,"name":"Brand","kind":"color"})).unwrap()["variable"].clone();
+        let variable_id = variable["id"].as_str().unwrap().to_string();
+        let before = e.doc.to_json().unwrap();
+        for (name, args) in [
+            ("desigma_create_variable_collection", json!({"name":"Empty","modes":[]})),
+            ("desigma_create_variable_collection", json!({"name":"Duplicate","modes":["Light","Light"]})),
+            ("desigma_create_variable", json!({"collection_id":"missing","name":"X","kind":"color"})),
+            ("desigma_create_variable", json!({"collection_id":collection_id,"name":"X","kind":"pixel"})),
+            ("desigma_create_variable", json!({"collection_id":collection_id,"name":"X","kind":"color","values":{"Light":"not-a-color"}})),
+            ("desigma_create_variable", json!({"collection_id":collection_id,"name":"X","kind":"color","values":{"Light":{"alias":"missing"}}})),
+            ("desigma_create_variable", json!({"collection_id":collection_id,"name":"X","kind":"number","values":{"Light":"12"}})),
+            ("desigma_set_variable_value", json!({"variable_id":"missing","value":"#ffffff"})),
+            ("desigma_set_variable_value", json!({"variable_id":variable_id,"mode":"Missing","value":"#ffffff"})),
+            ("desigma_set_variable_value", json!({"variable_id":variable_id,"value":12})),
+            ("desigma_set_variable_value", json!({"variable_id":variable_id,"value":{"alias":variable_id}})),
+            ("desigma_add_variable_mode", json!({"collection_id":collection_id,"name":"Light"})),
+            ("desigma_add_variable_mode", json!({"collection_id":collection_id,"name":""})),
+        ] {
+            let err = e.call(name, args).unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+            assert_eq!(e.doc.to_json().unwrap(), before, "{name} changed the document");
+        }
+    }
+
+    #[test]
+    fn variable_tools_are_registered_as_writing_tools() {
+        for name in ["desigma_create_variable_collection", "desigma_add_variable_mode", "desigma_create_variable", "desigma_set_variable_value"] {
+            let t = tools().into_iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("missing {name}"));
+            assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
+            assert_eq!(t["inputSchema"]["additionalProperties"], false, "{name}");
+        }
+        let set = tools().into_iter().find(|t| t["name"] == "desigma_set_variable_value").unwrap();
+        assert_eq!(set["annotations"]["idempotentHint"], true);
+        assert_eq!(set["inputSchema"]["required"], json!(["variable_id", "value"]));
     }
 
     #[test]

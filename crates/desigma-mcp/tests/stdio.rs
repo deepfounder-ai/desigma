@@ -16,11 +16,11 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
         let schema = tools.iter().find(|t| t.name == "desigma_delete_page").unwrap().input_schema.clone();
         assert_eq!(schema["properties"]["node_id"]["type"], "integer");
-        // 28 upstream tools + 5 for components, instances and page rename
+        // 32 upstream tools + 5 for components, instances and page rename
         for name in ["desigma_create_component", "desigma_create_instance", "desigma_detach_instance", "desigma_sync_instances", "desigma_rename_page"] {
             assert!(tools.iter().any(|t| t.name == name), "missing component tool {name}");
         }
-        assert_eq!(tools.len(), 33);
+        assert_eq!(tools.len(), 37);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -138,6 +138,68 @@ async fn duplicating_a_layer_copies_its_subtree_and_undoes_as_one_step() {
         assert_eq!(gone.is_error, Some(true));
         let listed = client.call_tool(call("desigma_list_nodes", json!({"parent_id":page}))).await.unwrap();
         assert_eq!(listed.structured_content.unwrap()["total"], 1);
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
+/// Variable collections, modes, values and aliases round-trip over stdio.
+#[tokio::test]
+async fn variables_round_trip_over_stdio() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+
+        let collection =
+            client.call_tool(call("desigma_create_variable_collection", json!({"name":"Theme","modes":["Light","Dark"],"default_mode":"Dark"}))).await.unwrap();
+        assert_eq!(collection.is_error, Some(false), "{collection:?}");
+        let collection = collection.structured_content.unwrap()["collection"].clone();
+        let collection_id = collection["id"].clone();
+        let light = collection["modes"].as_array().unwrap().iter().find(|m| m["name"] == "Light").unwrap()["id"].clone();
+        let dark = collection["modes"].as_array().unwrap().iter().find(|m| m["name"] == "Dark").unwrap()["id"].clone();
+
+        let variable = client
+            .call_tool(call(
+                "desigma_create_variable",
+                json!({
+                    "collection_id":collection_id,
+                    "name":"Color/Brand/Primary",
+                    "kind":"color",
+                    "values":{"Light":"#2F5BFF","Dark":"#8AA2FF"}
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(variable.is_error, Some(false), "{variable:?}");
+        let variable = variable.structured_content.unwrap()["variable"].clone();
+        let variable_id = variable["id"].clone();
+        assert!(variable["values"].get(light.as_str().unwrap()).is_some());
+        assert!(variable["values"].get(dark.as_str().unwrap()).is_some());
+
+        let set = client.call_tool(call("desigma_set_variable_value", json!({"variable_id":variable_id,"mode":"Light","value":"#FF6B4A"}))).await.unwrap();
+        assert_eq!(set.is_error, Some(false), "{set:?}");
+        assert_eq!(set.structured_content.unwrap()["changed"], true);
+
+        let alias = client
+            .call_tool(call(
+                "desigma_create_variable",
+                json!({"collection_id":collection_id,"name":"Color/Action","kind":"color","values":{"Light":{"alias":variable_id}}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(alias.is_error, Some(false), "{alias:?}");
+        let alias = alias.structured_content.unwrap()["variable"].clone();
+        let alias_id = alias["id"].clone();
+        let vars = client.call_tool(call("desigma_get_variables", json!({}))).await.unwrap();
+        let vars = vars.structured_content.unwrap();
+        assert_eq!(vars["variables"][alias_id.as_str().unwrap()]["values"][light.as_str().unwrap()]["Alias"], variable_id);
+
+        let added = client.call_tool(call("desigma_add_variable_mode", json!({"collection_id":collection_id,"name":"High contrast"}))).await.unwrap();
+        assert_eq!(added.is_error, Some(false), "{added:?}");
         client.cancel().await.unwrap();
     })
     .await
