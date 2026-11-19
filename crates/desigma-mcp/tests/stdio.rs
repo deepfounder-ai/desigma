@@ -16,11 +16,11 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
         let schema = tools.iter().find(|t| t.name == "desigma_delete_page").unwrap().input_schema.clone();
         assert_eq!(schema["properties"]["node_id"]["type"], "integer");
-        // 27 upstream tools + 5 for components, instances and page rename
+        // 28 upstream tools + 5 for components, instances and page rename
         for name in ["desigma_create_component", "desigma_create_instance", "desigma_detach_instance", "desigma_sync_instances", "desigma_rename_page"] {
             assert!(tools.iter().any(|t| t.name == name), "missing component tool {name}");
         }
-        assert_eq!(tools.len(), 32);
+        assert_eq!(tools.len(), 33);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -96,6 +96,48 @@ async fn moving_a_layer_reparents_it_and_refuses_cycles() {
         client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
         let restored = client.call_tool(call("desigma_get_node", json!({"node_id":id}))).await.unwrap();
         assert_eq!(restored.structured_content.unwrap()["node"]["parent"], page);
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
+/// Duplicating a layer copies its subtree, offsets it and undoes as one step.
+#[tokio::test]
+async fn duplicating_a_layer_copies_its_subtree_and_undoes_as_one_step() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+        let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
+        let page = doc.structured_content.unwrap()["pages"][0]["node_id"].clone();
+        let frame =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Card","width":100,"height":100}))).await.unwrap();
+        let frame_id = frame.structured_content.unwrap()["node"]["id"].clone();
+        let inner = client.call_tool(call("desigma_create_node", json!({"parent_id":frame_id,"kind":"rectangle","name":"Inner"}))).await.unwrap();
+        let inner_id = inner.structured_content.unwrap()["node"]["id"].clone();
+
+        let duplicated = client.call_tool(call("desigma_duplicate_node", json!({"node_id":frame_id}))).await.unwrap();
+        assert_eq!(duplicated.is_error, Some(false), "{duplicated:?}");
+        let body = duplicated.structured_content.unwrap();
+        assert_eq!(body["nodes"], 2);
+        let copy_id = body["node_id"].clone();
+        let copied = client.call_tool(call("desigma_get_node", json!({"node_id":copy_id}))).await.unwrap();
+        let copied = copied.structured_content.unwrap()["node"].clone();
+        assert_eq!(copied["name"], "Card");
+        assert_eq!(copied["transform"]["tx"], 10.0);
+        assert_eq!(copied["parent"], page);
+        assert_ne!(copied["children"][0], inner_id);
+        let page_node = client.call_tool(call("desigma_get_node", json!({"node_id":page}))).await.unwrap();
+        assert_eq!(page_node.structured_content.unwrap()["node"]["children"], json!([frame_id, copy_id]));
+
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let gone = client.call_tool(call("desigma_get_node", json!({"node_id":copy_id}))).await.unwrap();
+        assert_eq!(gone.is_error, Some(true));
+        let listed = client.call_tool(call("desigma_list_nodes", json!({"parent_id":page}))).await.unwrap();
+        assert_eq!(listed.structured_content.unwrap()["total"], 1);
         client.cancel().await.unwrap();
     })
     .await

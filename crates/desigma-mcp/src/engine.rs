@@ -84,6 +84,7 @@ impl Engine {
 /// editor bridge to refuse edits mid-gesture, so a new editing tool must be listed here.
 pub const EDIT_TOOLS: &[&str] = &[
     "desigma_create_node",
+    "desigma_duplicate_node",
     "desigma_create_page",
     "desigma_update_node",
     "desigma_move_node",
@@ -181,6 +182,7 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             Ok(json!({"node_id":id,"language":a.language,"code":code}))
         }
         "desigma_create_node" => create(host, parse(args)?),
+        "desigma_duplicate_node" => duplicate(host, parse(args)?),
         "desigma_update_node" => update(host, parse(args)?),
         "desigma_delete_page" => {
             let a: NodeArgs = parse(args)?;
@@ -471,6 +473,45 @@ fn create<H: Host>(host: &mut H, a: CreateArgs) -> Result<Value, String> {
     }
     host.exec(Command::Insert { parent: NodeId(a.parent_id), index, nodes: vec![node] })?;
     Ok(json!({"node":host.doc().get(id),"changed":true}))
+}
+
+/// Copy a non-page layer and its subtree in place, right after the source.
+///
+/// Structural edits inside an instance are not part of the component override model, so
+/// those layers are refused rather than copied and silently lost on the next sync.
+fn duplicate<H: Host>(host: &mut H, a: DuplicateArgs) -> Result<Value, String> {
+    let src = node(host, a.node_id)?.clone();
+    let parent_id = src.parent.ok_or("page roots cannot be duplicated by this tool")?;
+    let parent = node(host, parent_id.0)?.clone();
+    if !parent.kind.is_container() {
+        return Err("duplicate parent must be a container".into());
+    }
+    if let Some(instance) = desigma_doc::instance_root_of(host.doc(), src.id) {
+        if instance != src.id {
+            return Err("a layer inside an instance cannot be duplicated; duplicate the instance or edit the main component".into());
+        }
+    }
+    if let Some(offset) = a.offset {
+        if !offset.is_finite() || !(0.0..=100_000.0).contains(&offset) {
+            return Err("offset must be finite and between 0 and 100000".into());
+        }
+    }
+    let auto_layout = parent.kind.frame_props().is_some_and(|f| f.auto_layout.is_some());
+    let offset = a.offset.unwrap_or(if auto_layout { 0.0 } else { 10.0 });
+    let index = parent.children.iter().position(|c| *c == src.id).map_or(parent.children.len(), |i| i + 1).min(parent.children.len());
+    // duplicate_subtree reserves fresh ids on the document; the Insert below is the
+    // undoable edit that puts the copies into the tree.
+    let mut nodes = desigma_doc::duplicate_subtree(host.doc_mut(), src.id);
+    let count = nodes.len();
+    let root = nodes.first_mut().ok_or("cannot duplicate this layer")?;
+    let new_id = root.id.0;
+    let name = root.name.clone();
+    if offset != 0.0 {
+        root.transform.tx += offset;
+        root.transform.ty += offset;
+    }
+    host.exec(Command::Insert { parent: parent_id, index, nodes })?;
+    Ok(json!({"node_id":new_id,"name":name,"parent_id":parent_id.0,"index":index,"nodes":count,"changed":true}))
 }
 
 fn update<H: Host>(host: &mut H, a: UpdateArgs) -> Result<Value, String> {
@@ -797,6 +838,14 @@ struct CreateArgs {
     #[serde(default = "default_size")]
     height: f32,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DuplicateArgs {
+    node_id: u64,
+    /// Parent-space offset for the copied root; `None` picks 10, or 0 in auto layout.
+    offset: Option<f32>,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MoveNodeArgs {
@@ -1007,6 +1056,14 @@ pub fn tools() -> Vec<Value> {
     );
     add("create_node","Create one layer in a container; defaults to x/y=0, width/height=100. Supports undo. Text is only valid for text layers. Changes are in memory until saved.",
         json!({"parent_id":id,"kind":{"type":"string","enum":["frame","rectangle","ellipse","text"]},"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size}),vec!["parent_id","kind"],false,false);
+    add(
+        "duplicate_node",
+        "Duplicate a non-page layer and its whole subtree in place, immediately after the source under the same parent. New node IDs; the copy keeps the source name. offset moves the copied root in parent space; it defaults to 10, or 0 when the parent uses auto layout. Refuses page roots and layers inside an instance. Supports undo as one step; changes remain in memory until saved.",
+        json!({"node_id":id,"offset":{"type":"number","minimum":0,"maximum":100000,"description":"Parent-space offset for the copied root; defaults to 10, or 0 when the parent uses auto layout."}}),
+        vec!["node_id"],
+        false,
+        false,
+    );
     add("import_svg","Import SVG markup as one frame under parent_id, top-left at (x, y). Real child layers (paths, text, groups) are created rather than a flat bitmap; bitmap bytes inside the SVG become document assets. Supports undo as one step; changes remain in memory until saved.",json!({"parent_id":id,"svg":{"type":"string","maxLength":8388608,"description":"SVG markup; at most 8 MiB. Pass this or path."},"path":{"type":"string","description":"Workspace-relative .svg file to import instead of inline markup; the layer takes the file name unless name is given."},"name":name,"x":coordinate,"y":coordinate}),vec!["parent_id"],false,false);
     add("update_node","Update specified fields of one non-page layer. Coordinates are parent-relative. Replacing text clears text runs and list ranges. Supports undo; changes remain in memory until saved.",
         json!({"node_id":id,"name":name,"text":text,"x":coordinate,"y":coordinate,"width":size,"height":size,"visible":{"type":"boolean"},"opacity":{"type":"number","minimum":0,"maximum":1}}),vec!["node_id"],false,true);
@@ -1181,6 +1238,75 @@ mod tests {
         e.call("desigma_undo", json!({})).unwrap();
         assert!(e.doc.get(NodeId(id)).is_some());
     }
+    #[test]
+    fn duplicate_copies_subtree_after_source_with_offset_and_undo() {
+        let mut e = Engine::default();
+        let frame = create(&mut e, "frame", "Card");
+        let inner =
+            e.call("desigma_create_node", json!({"parent_id":frame,"kind":"rectangle","name":"Inner","x":4,"y":6})).unwrap()["node"]["id"].as_u64().unwrap();
+        let result = e.call("desigma_duplicate_node", json!({"node_id":frame})).unwrap();
+        let copy = result["node_id"].as_u64().unwrap();
+        assert_eq!(result["nodes"], 2);
+        assert_eq!(result["index"], 1);
+        assert_eq!(result["parent_id"], 1);
+        assert_eq!(e.doc.get(NodeId(1)).unwrap().children, vec![NodeId(frame), NodeId(copy)]);
+        let copied = e.doc.get(NodeId(copy)).unwrap();
+        assert_eq!(copied.name, "Card");
+        assert_eq!(copied.transform.tx, 10.0);
+        assert_eq!(copied.transform.ty, 10.0);
+        assert_eq!(copied.children.len(), 1);
+        let copied_inner = e.doc.get(copied.children[0]).unwrap();
+        assert_eq!(copied_inner.name, "Inner");
+        assert_eq!(copied_inner.parent, Some(NodeId(copy)));
+        assert_eq!(copied_inner.transform.tx, 4.0);
+        assert_ne!(copied.children[0], NodeId(inner));
+        e.call("desigma_undo", json!({})).unwrap();
+        assert!(e.doc.get(NodeId(copy)).is_none());
+        assert_eq!(e.doc.get(NodeId(1)).unwrap().children, vec![NodeId(frame)]);
+        e.call("desigma_redo", json!({})).unwrap();
+        assert!(e.doc.get(NodeId(copy)).is_some());
+    }
+
+    #[test]
+    fn duplicate_uses_zero_offset_in_auto_layout_and_accepts_explicit_offset() {
+        let mut e = Engine::default();
+        let row = create(&mut e, "frame", "Row");
+        e.doc.get_mut(NodeId(row)).unwrap().kind.frame_props_mut().unwrap().auto_layout = Some(Default::default());
+        let item = e.call("desigma_create_node", json!({"parent_id":row,"kind":"rectangle","name":"Item"})).unwrap()["node"]["id"].as_u64().unwrap();
+        let zero = e.call("desigma_duplicate_node", json!({"node_id":item})).unwrap();
+        assert_eq!(e.doc.get(NodeId(zero["node_id"].as_u64().unwrap())).unwrap().transform.tx, 0.0);
+        let shifted = e.call("desigma_duplicate_node", json!({"node_id":item,"offset":4})).unwrap();
+        assert_eq!(e.doc.get(NodeId(shifted["node_id"].as_u64().unwrap())).unwrap().transform.tx, 4.0);
+    }
+
+    #[test]
+    fn duplicate_refuses_page_roots_missing_nodes_and_instance_layers() {
+        let mut e = Engine::default();
+        let err = e.call("desigma_duplicate_node", json!({"node_id":1})).unwrap_err();
+        assert!(err.contains("page roots"), "{err}");
+        let err = e.call("desigma_duplicate_node", json!({"node_id":9999})).unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+        let comp = create(&mut e, "frame", "Button");
+        e.call("desigma_create_node", json!({"parent_id":comp,"kind":"rectangle","name":"Label"})).unwrap();
+        e.call("desigma_create_component", json!({"node_id":comp})).unwrap();
+        let instance = e.call("desigma_create_instance", json!({"component_id":comp,"parent_id":1,"x":0,"y":0})).unwrap();
+        let instance_id = instance["instance_id"].as_u64().unwrap();
+        let child = e.doc.get(NodeId(instance_id)).unwrap().children[0];
+        let err = e.call("desigma_duplicate_node", json!({"node_id":child})).unwrap_err();
+        assert!(err.contains("inside an instance"), "{err}");
+        let err = e.call("desigma_duplicate_node", json!({"node_id":comp,"offset":-1})).unwrap_err();
+        assert!(err.contains("offset"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_is_annotated_as_a_writing_non_idempotent_tool() {
+        let t = tools().into_iter().find(|t| t["name"] == "desigma_duplicate_node").unwrap();
+        assert_eq!(t["annotations"]["readOnlyHint"], false);
+        assert_eq!(t["annotations"]["idempotentHint"], false);
+        assert_eq!(t["inputSchema"]["required"], json!(["node_id"]));
+        assert_eq!(t["inputSchema"]["properties"]["offset"]["maximum"], 100000);
+    }
+
     #[test]
     fn invalid_mutations_leave_document_and_history_unchanged() {
         let mut e = Engine::default();
