@@ -1,7 +1,7 @@
 //! Typed, local document operations shared by the MCP transport and future bridges.
 use desigma_doc::{
-    Color, Command, Document, History, LineHeight, Node, NodeId, NodeKind, Paint, Rect, TextAlignH, TextAlignV, TextStyle, VariableKind, VariableStore,
-    VariableValue,
+    AutoLayout, Color, Command, Document, History, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind, Paint, Rect, Sizing, TextAlignH,
+    TextAlignV, TextAutoResize, TextStyle, VariableKind, VariableStore, VariableValue,
 };
 use desigma_svg::ImportOptions;
 use serde::{de::DeserializeOwned, Deserialize};
@@ -93,6 +93,8 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_move_node",
     "desigma_set_appearance",
     "desigma_set_text_style",
+    "desigma_set_auto_layout",
+    "desigma_set_layout_child",
     "desigma_create_variable_collection",
     "desigma_add_variable_mode",
     "desigma_create_variable",
@@ -234,6 +236,8 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             let a: TextStyleArgs = parse(args)?;
             set_text_style(host, a)
         }
+        "desigma_set_auto_layout" => set_auto_layout(host, parse(args)?),
+        "desigma_set_layout_child" => set_layout_child(host, parse(args)?),
         "desigma_import_svg" => import_svg(host, parse(args)?),
         "desigma_delete_node" => {
             let a: NodeArgs = parse(args)?;
@@ -748,6 +752,23 @@ fn set_text_style<H: Host>(host: &mut H, a: TextStyleArgs) -> Result<Value, Stri
         };
         applied.push("align_v");
     }
+    if let Some(value) = a.auto_resize.as_deref() {
+        text.auto_resize = match value {
+            "none" => TextAutoResize::None,
+            "width_and_height" => TextAutoResize::WidthAndHeight,
+            "height" => TextAutoResize::Height,
+            "truncate" => TextAutoResize::Truncate,
+            other => return Err(format!("auto_resize must be none|width_and_height|height|truncate, got {other}")),
+        };
+        applied.push("auto_resize");
+    }
+    if let Some(lines) = a.max_lines {
+        if !(1..=1000).contains(&lines) {
+            return Err("max_lines must be within 1..=1000".into());
+        }
+        text.max_lines = Some(lines);
+        applied.push("max_lines");
+    }
     commit(host, node, applied)
 }
 
@@ -1067,6 +1088,170 @@ fn set_variable_mode<H: Host>(host: &mut H, a: SetVariableModeArgs) -> Result<Va
     Ok(json!({"node_ids":a.node_ids,"collection_id":a.collection_id,"mode_id":mode,"changed":changed}))
 }
 
+fn layout_direction(value: &str) -> Result<LayoutDirection, String> {
+    match value {
+        "horizontal" => Ok(LayoutDirection::Horizontal),
+        "vertical" => Ok(LayoutDirection::Vertical),
+        _ => Err(format!("direction must be horizontal or vertical, got {value}")),
+    }
+}
+
+fn layout_align(value: &str) -> Result<LayoutAlign, String> {
+    match value {
+        "start" => Ok(LayoutAlign::Start),
+        "center" => Ok(LayoutAlign::Center),
+        "end" => Ok(LayoutAlign::End),
+        "space_between" => Ok(LayoutAlign::SpaceBetween),
+        "baseline" => Ok(LayoutAlign::Baseline),
+        _ => Err(format!("align must be start, center, end, space_between, or baseline, got {value}")),
+    }
+}
+
+fn layout_sizing(value: &str) -> Result<Sizing, String> {
+    match value {
+        "fixed" => Ok(Sizing::Fixed),
+        "hug" => Ok(Sizing::Hug),
+        "fill" => Ok(Sizing::Fill),
+        _ => Err(format!("sizing must be fixed, hug, or fill, got {value}")),
+    }
+}
+
+fn layout_number(field: &str, value: f32) -> Result<f32, String> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("{field} must be finite and non-negative"));
+    }
+    Ok(value)
+}
+
+fn set_auto_layout<H: Host>(host: &mut H, a: AutoLayoutArgs) -> Result<Value, String> {
+    let mut node = node(host, a.node_id)?.clone();
+    if node.parent.is_none() {
+        return Err("page roots cannot be edited by this tool".into());
+    }
+    let enabled = a.enabled.unwrap_or(true);
+    let has_fields = a.direction.is_some()
+        || a.wrap.is_some()
+        || a.item_spacing.is_some()
+        || a.counter_spacing.is_some()
+        || a.padding.is_some()
+        || a.primary_align.is_some()
+        || a.counter_align.is_some()
+        || a.primary_sizing.is_some()
+        || a.counter_sizing.is_some()
+        || a.stroke_included.is_some()
+        || a.reverse_z.is_some();
+    if !enabled && has_fields {
+        return Err("enabled=false cannot be combined with auto layout fields".into());
+    }
+    let Some(frame) = node.kind.frame_props_mut() else {
+        return Err("node does not support auto layout".into());
+    };
+    if enabled {
+        let layout = frame.auto_layout.get_or_insert_with(AutoLayout::default);
+        if let Some(value) = a.direction.as_deref() {
+            layout.direction = layout_direction(value)?;
+        }
+        if let Some(value) = a.wrap {
+            layout.wrap = value;
+        }
+        if let Some(value) = a.item_spacing {
+            layout.item_spacing = layout_number("item_spacing", value)?;
+        }
+        if let Some(value) = a.counter_spacing {
+            layout.counter_spacing = layout_number("counter_spacing", value)?;
+        }
+        if let Some(padding) = a.padding {
+            if padding.len() != 4 {
+                return Err("padding must be [top, right, bottom, left]".into());
+            }
+            let mut out = [0.0; 4];
+            for (i, value) in padding.into_iter().enumerate() {
+                out[i] = layout_number("padding", value)?;
+            }
+            layout.padding = out;
+        }
+        if let Some(value) = a.primary_align.as_deref() {
+            layout.primary_align = layout_align(value)?;
+        }
+        if let Some(value) = a.counter_align.as_deref() {
+            layout.counter_align = layout_align(value)?;
+        }
+        if let Some(value) = a.primary_sizing.as_deref() {
+            layout.primary_sizing = layout_sizing(value)?;
+        }
+        if let Some(value) = a.counter_sizing.as_deref() {
+            layout.counter_sizing = layout_sizing(value)?;
+        }
+        if let Some(value) = a.stroke_included {
+            layout.stroke_included = value;
+        }
+        if let Some(value) = a.reverse_z {
+            layout.reverse_z = value;
+        }
+    } else {
+        frame.auto_layout = None;
+    }
+    let changed = host.doc().get(NodeId(a.node_id)) != Some(&node);
+    if changed {
+        host.exec(Command::Update { node: Box::new(node) })?;
+    }
+    let auto_layout = host.doc().get(NodeId(a.node_id)).and_then(|n| n.kind.frame_props()).and_then(|f| f.auto_layout);
+    Ok(json!({"node_id":a.node_id,"auto_layout":auto_layout,"changed":changed}))
+}
+
+fn set_layout_child<H: Host>(host: &mut H, a: LayoutChildArgs) -> Result<Value, String> {
+    let mut layer = node(host, a.node_id)?.clone();
+    let parent = layer.parent.ok_or("page roots cannot be edited by this tool")?;
+    if node(host, parent.0)?.kind.frame_props().is_none_or(|f| f.auto_layout.is_none()) {
+        return Err("parent must use auto layout".into());
+    }
+    let grow = match a.grow {
+        Some(value) if value.is_finite() && (0.0..=1000.0).contains(&value) => Some(value),
+        Some(_) => return Err("grow must be finite and between 0 and 1000".into()),
+        None => None,
+    };
+    let min_w = a.min_w.map(|v| layout_number("min_w", v)).transpose()?;
+    let max_w = a.max_w.map(|v| layout_number("max_w", v)).transpose()?;
+    let min_h = a.min_h.map(|v| layout_number("min_h", v)).transpose()?;
+    let max_h = a.max_h.map(|v| layout_number("max_h", v)).transpose()?;
+    if min_w.zip(max_w).is_some_and(|(min, max)| min > max) {
+        return Err("min_w must not exceed max_w".into());
+    }
+    if min_h.zip(max_h).is_some_and(|(min, max)| min > max) {
+        return Err("min_h must not exceed max_h".into());
+    }
+    if let Some(value) = a.horizontal.as_deref() {
+        layer.layout_child.horizontal = layout_sizing(value)?;
+    }
+    if let Some(value) = a.vertical.as_deref() {
+        layer.layout_child.vertical = layout_sizing(value)?;
+    }
+    if let Some(value) = grow {
+        layer.layout_child.grow = value;
+    }
+    if min_w.is_some() {
+        layer.layout_child.min_w = min_w;
+    }
+    if max_w.is_some() {
+        layer.layout_child.max_w = max_w;
+    }
+    if min_h.is_some() {
+        layer.layout_child.min_h = min_h;
+    }
+    if max_h.is_some() {
+        layer.layout_child.max_h = max_h;
+    }
+    if let Some(value) = a.absolute {
+        layer.layout_child.absolute = value;
+    }
+    let changed = host.doc().get(NodeId(a.node_id)) != Some(&layer);
+    if changed {
+        host.exec(Command::Update { node: Box::new(layer) })?;
+    }
+    let layout_child = host.doc().get(NodeId(a.node_id)).map(|n| n.layout_child);
+    Ok(json!({"node_id":a.node_id,"layout_child":layout_child,"changed":changed}))
+}
+
 fn colour(spec: &str, field: &str) -> Result<Color, String> {
     Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid {field} colour: {spec} (use #RGB, #RRGGBB, #RRGGBBAA or none)"))
 }
@@ -1291,6 +1476,45 @@ struct TextStyleArgs {
     align_h: Option<String>,
     /// top | center | bottom
     align_v: Option<String>,
+    /// none | width_and_height | height | truncate
+    auto_resize: Option<String>,
+    /// Maximum visible lines when auto_resize is truncate; 1..=1000.
+    max_lines: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AutoLayoutArgs {
+    node_id: u64,
+    /// false removes auto layout; true (default) creates or updates it.
+    enabled: Option<bool>,
+    /// horizontal | vertical
+    direction: Option<String>,
+    wrap: Option<bool>,
+    item_spacing: Option<f32>,
+    counter_spacing: Option<f32>,
+    /// top, right, bottom, left
+    padding: Option<Vec<f32>>,
+    primary_align: Option<String>,
+    counter_align: Option<String>,
+    primary_sizing: Option<String>,
+    counter_sizing: Option<String>,
+    stroke_included: Option<bool>,
+    reverse_z: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LayoutChildArgs {
+    node_id: u64,
+    horizontal: Option<String>,
+    vertical: Option<String>,
+    grow: Option<f32>,
+    min_w: Option<f32>,
+    max_w: Option<f32>,
+    min_h: Option<f32>,
+    max_h: Option<f32>,
+    absolute: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1548,8 +1772,24 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "set_text_style",
-        "Set a text layer's content and typography: font size, CSS weight, family, line height in px, letter spacing, horizontal and vertical alignment. Supports undo; changes remain in memory until saved.",
-        json!({"node_id":id,"text":text,"font_size":{"type":"number","minimum":1,"maximum":1000},"font_weight":{"type":"integer","minimum":100,"maximum":900,"multipleOf":100},"font_family":{"type":"string","maxLength":256},"line_height":{"type":"number","minimum":0,"maximum":1000},"letter_spacing":{"type":"number","minimum":-100,"maximum":100},"align_h":{"type":"string","enum":["left","center","right","justified"]},"align_v":{"type":"string","enum":["top","center","bottom"]}}),
+        "Set a text layer's content, typography and auto-resize mode: font size, CSS weight, family, line height in px, letter spacing, alignment, auto_resize (none, width_and_height, height, truncate) and max_lines. Supports undo; changes remain in memory until saved.",
+        json!({"node_id":id,"text":text,"font_size":{"type":"number","minimum":1,"maximum":1000},"font_weight":{"type":"integer","minimum":100,"maximum":900,"multipleOf":100},"font_family":{"type":"string","maxLength":256},"line_height":{"type":"number","minimum":0,"maximum":1000},"letter_spacing":{"type":"number","minimum":-100,"maximum":100},"align_h":{"type":"string","enum":["left","center","right","justified"]},"align_v":{"type":"string","enum":["top","center","bottom"]},"auto_resize":{"type":"string","enum":["none","width_and_height","height","truncate"]},"max_lines":{"type":"integer","minimum":1,"maximum":1000}}),
+        vec!["node_id"],
+        false,
+        true,
+    );
+    add(
+        "set_auto_layout",
+        "Create, update, or remove auto layout on a frame, component, component set, or instance. enabled=false removes it and cannot be combined with layout fields. Spacing and padding are in px and must be non-negative. Supports undo as one step; changes remain in memory until saved.",
+        json!({"node_id":id,"enabled":{"type":"boolean"},"direction":{"type":"string","enum":["horizontal","vertical"]},"wrap":{"type":"boolean"},"item_spacing":{"type":"number","minimum":0,"maximum":1000000},"counter_spacing":{"type":"number","minimum":0,"maximum":1000000},"padding":{"type":"array","items":{"type":"number","minimum":0,"maximum":1000000},"minItems":4,"maxItems":4,"description":"top, right, bottom, left"},"primary_align":{"type":"string","enum":["start","center","end","space_between","baseline"]},"counter_align":{"type":"string","enum":["start","center","end","space_between","baseline"]},"primary_sizing":{"type":"string","enum":["fixed","hug","fill"]},"counter_sizing":{"type":"string","enum":["fixed","hug","fill"]},"stroke_included":{"type":"boolean"},"reverse_z":{"type":"boolean"}}),
+        vec!["node_id"],
+        false,
+        true,
+    );
+    add(
+        "set_layout_child",
+        "Set one layer's auto-layout child sizing. The parent must use auto layout. Sizing is fixed, hug, or fill; min/max are px and min must not exceed max. Supports undo as one step; changes remain in memory until saved.",
+        json!({"node_id":id,"horizontal":{"type":"string","enum":["fixed","hug","fill"]},"vertical":{"type":"string","enum":["fixed","hug","fill"]},"grow":{"type":"number","minimum":0,"maximum":1000},"min_w":{"type":"number","minimum":0,"maximum":1000000},"max_w":{"type":"number","minimum":0,"maximum":1000000},"min_h":{"type":"number","minimum":0,"maximum":1000000},"max_h":{"type":"number","minimum":0,"maximum":1000000},"absolute":{"type":"boolean"}}),
         vec!["node_id"],
         false,
         true,
@@ -1984,6 +2224,132 @@ mod tests {
         let bind = tools().into_iter().find(|t| t["name"] == "desigma_bind_variable").unwrap();
         assert_eq!(bind["annotations"]["idempotentHint"], true);
         assert_eq!(bind["inputSchema"]["required"], json!(["node_ids", "property", "variable_id"]));
+    }
+
+    #[test]
+    fn auto_layout_updates_removes_and_validates() {
+        let mut e = Engine::default();
+        let frame = create(&mut e, "frame", "Row");
+        let result = e
+            .call(
+                "desigma_set_auto_layout",
+                json!({
+                    "node_id":frame,
+                    "direction":"vertical",
+                    "wrap":true,
+                    "item_spacing":12,
+                    "counter_spacing":8,
+                    "padding":[16,12,16,12],
+                    "primary_align":"center",
+                    "counter_align":"space_between",
+                    "primary_sizing":"hug",
+                    "counter_sizing":"fill",
+                    "stroke_included":true,
+                    "reverse_z":true
+                }),
+            )
+            .unwrap();
+        assert_eq!(result["changed"], true);
+        let layout = e.doc.get(NodeId(frame)).unwrap().kind.frame_props().unwrap().auto_layout.unwrap();
+        assert_eq!(layout.direction, LayoutDirection::Vertical);
+        assert!(layout.wrap);
+        assert_eq!(layout.item_spacing, 12.0);
+        assert_eq!(layout.counter_spacing, 8.0);
+        assert_eq!(layout.padding, [16.0, 12.0, 16.0, 12.0]);
+        assert_eq!(layout.primary_align, LayoutAlign::Center);
+        assert_eq!(layout.counter_align, LayoutAlign::SpaceBetween);
+        assert_eq!(layout.primary_sizing, Sizing::Hug);
+        assert_eq!(layout.counter_sizing, Sizing::Fill);
+        assert!(layout.stroke_included);
+        assert!(layout.reverse_z);
+
+        let removed = e.call("desigma_set_auto_layout", json!({"node_id":frame,"enabled":false})).unwrap();
+        assert_eq!(removed["changed"], true);
+        assert!(e.doc.get(NodeId(frame)).unwrap().kind.frame_props().unwrap().auto_layout.is_none());
+        e.call("desigma_undo", json!({})).unwrap();
+        assert!(e.doc.get(NodeId(frame)).unwrap().kind.frame_props().unwrap().auto_layout.is_some());
+
+        let before = e.doc.to_json().unwrap();
+        for (name, args) in [
+            ("desigma_set_auto_layout", json!({"node_id":1})),
+            ("desigma_set_auto_layout", json!({"node_id":frame,"padding":[1,2,3]})),
+            ("desigma_set_auto_layout", json!({"node_id":frame,"item_spacing":-1})),
+            ("desigma_set_auto_layout", json!({"node_id":frame,"direction":"diagonal"})),
+            ("desigma_set_auto_layout", json!({"node_id":frame,"enabled":false,"direction":"vertical"})),
+        ] {
+            let err = e.call(name, args).unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+            assert_eq!(e.doc.to_json().unwrap(), before, "{name} changed the document");
+        }
+    }
+
+    #[test]
+    fn layout_child_requires_auto_layout_and_sets_limits() {
+        let mut e = Engine::default();
+        let parent = create(&mut e, "frame", "Row");
+        let child = e.call("desigma_create_node", json!({"parent_id":parent,"kind":"rectangle","name":"Item"})).unwrap()["node"]["id"].as_u64().unwrap();
+        let before = e.doc.to_json().unwrap();
+        let err = e.call("desigma_set_layout_child", json!({"node_id":child,"horizontal":"fill"})).unwrap_err();
+        assert!(err.contains("auto layout"), "{err}");
+        assert_eq!(e.doc.to_json().unwrap(), before);
+        e.call("desigma_set_auto_layout", json!({"node_id":parent,"direction":"horizontal"})).unwrap();
+        let result = e
+            .call(
+                "desigma_set_layout_child",
+                json!({"node_id":child,"horizontal":"fill","vertical":"fixed","grow":0.5,"min_w":100,"max_w":200,"min_h":20,"max_h":80,"absolute":false}),
+            )
+            .unwrap();
+        assert_eq!(result["changed"], true);
+        let layout = e.doc.get(NodeId(child)).unwrap().layout_child;
+        assert_eq!(layout.horizontal, Sizing::Fill);
+        assert_eq!(layout.vertical, Sizing::Fixed);
+        assert_eq!(layout.grow, 0.5);
+        assert_eq!(layout.min_w, Some(100.0));
+        assert_eq!(layout.max_w, Some(200.0));
+        assert_eq!(layout.min_h, Some(20.0));
+        assert_eq!(layout.max_h, Some(80.0));
+        let before = e.doc.to_json().unwrap();
+        for (name, args) in [
+            ("desigma_set_layout_child", json!({"node_id":1,"horizontal":"fill"})),
+            ("desigma_set_layout_child", json!({"node_id":child,"min_w":100,"max_w":50})),
+            ("desigma_set_layout_child", json!({"node_id":child,"horizontal":"stretch"})),
+            ("desigma_set_layout_child", json!({"node_id":child,"grow":-1})),
+        ] {
+            let err = e.call(name, args).unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+            assert_eq!(e.doc.to_json().unwrap(), before, "{name} changed the document");
+        }
+    }
+
+    #[test]
+    fn text_auto_resize_and_max_lines_are_editable() {
+        let mut e = Engine::default();
+        let text = create(&mut e, "text", "Label");
+        let result = e.call("desigma_set_text_style", json!({"node_id":text,"auto_resize":"truncate","max_lines":2})).unwrap();
+        assert_eq!(result["changed"], true);
+        let props = e.doc.get(NodeId(text)).unwrap().kind.any_text().unwrap();
+        assert_eq!(props.auto_resize, TextAutoResize::Truncate);
+        assert_eq!(props.max_lines, Some(2));
+        let before = e.doc.to_json().unwrap();
+        for (name, args) in
+            [("desigma_set_text_style", json!({"node_id":text,"auto_resize":"banana"})), ("desigma_set_text_style", json!({"node_id":text,"max_lines":0}))]
+        {
+            let err = e.call(name, args).unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+            assert_eq!(e.doc.to_json().unwrap(), before, "{name} changed the document");
+        }
+        e.call("desigma_undo", json!({})).unwrap();
+        assert_eq!(e.doc.get(NodeId(text)).unwrap().kind.any_text().unwrap().auto_resize, TextAutoResize::WidthAndHeight);
+    }
+
+    #[test]
+    fn layout_tools_are_registered_as_writing_tools() {
+        for name in ["desigma_set_auto_layout", "desigma_set_layout_child"] {
+            let t = tools().into_iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("missing {name}"));
+            assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
+            assert_eq!(t["annotations"]["idempotentHint"], true, "{name}");
+            assert_eq!(t["inputSchema"]["required"], json!(["node_id"]), "{name}");
+        }
     }
 
     #[test]

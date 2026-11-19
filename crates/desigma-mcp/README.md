@@ -96,6 +96,8 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_create_node` | Add a frame, rectangle, ellipse, or text layer to a container. |
 | `desigma_duplicate_node` | Copy a non-page layer and its subtree in place, after the source. New IDs; optional parent-space `offset` (10 by default, 0 in auto layout). Refuses page roots and layers inside an instance. |
 | `desigma_update_node` | Change name, position, dimensions, visibility, opacity, or plain text. |
+| `desigma_set_auto_layout` | Create, update, or remove auto layout on a frame, component, or instance. |
+| `desigma_set_layout_child` | Set a layer's auto-layout sizing, grow, min/max, or absolute behavior. |
 | `desigma_delete_node` | Remove a non-page layer and its descendants. |
 | `desigma_undo` / `desigma_redo` | Traverse the edit history. In the editor it is the user's own undo stack, so `desigma_undo` may undo the user's latest edit. |
 | `desigma_export_image` | Render a node to a PNG at `scale` (0.25–4, default 1) and write it to `path` inside the workspace, overwriting if present; returns `{path,width,height}`. Works in both session types. |
