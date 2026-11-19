@@ -97,6 +97,9 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_add_variable_mode",
     "desigma_create_variable",
     "desigma_set_variable_value",
+    "desigma_bind_variable",
+    "desigma_detach_variable",
+    "desigma_set_variable_mode",
     "desigma_import_svg",
     "desigma_delete_node",
     "desigma_delete_page",
@@ -177,6 +180,9 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         "desigma_add_variable_mode" => add_variable_mode(host, parse(args)?),
         "desigma_create_variable" => create_variable(host, parse(args)?),
         "desigma_set_variable_value" => set_variable_value(host, parse(args)?),
+        "desigma_bind_variable" => bind_variable(host, parse(args)?),
+        "desigma_detach_variable" => detach_variable(host, parse(args)?),
+        "desigma_set_variable_mode" => set_variable_mode(host, parse(args)?),
         "desigma_generate_code" => {
             let a: CodeArgs = parse(args)?;
             let id = node(host, a.node_id)?.id;
@@ -951,6 +957,116 @@ fn set_variable_value<H: Host>(host: &mut H, a: SetVariableValueArgs) -> Result<
     Ok(json!({"variable_id":a.variable_id,"mode_id":mode,"value":value,"changed":changed}))
 }
 
+/// Validate a variable-tool node list: non-empty, bounded, existing, non-page, deduplicated.
+fn variable_nodes<H: Host>(host: &H, ids: &[u64]) -> Result<Vec<NodeId>, String> {
+    if ids.is_empty() {
+        return Err("node_ids must contain at least one node".into());
+    }
+    if ids.len() > 500 {
+        return Err("node_ids accepts at most 500 nodes".into());
+    }
+    let mut out = Vec::new();
+    for id in ids {
+        let n = node(host, *id)?;
+        if n.parent.is_none() {
+            return Err("page roots cannot be targeted by variable tools".into());
+        }
+        if !out.contains(&n.id) {
+            out.push(n.id);
+        }
+    }
+    Ok(out)
+}
+
+fn bind_variable<H: Host>(host: &mut H, a: BindVariableArgs) -> Result<Value, String> {
+    let nodes = variable_nodes(host, &a.node_ids)?;
+    let expected = desigma_doc::property_kind(&a.property).ok_or_else(|| format!("unknown variable property '{}'", a.property))?;
+    let (kind, scopes) =
+        host.doc().variables.get(&a.variable_id).map(|v| (v.kind, v.scopes.clone())).ok_or_else(|| format!("variable {} not found", a.variable_id))?;
+    if kind != expected {
+        return Err(format!("property '{}' accepts {expected:?} variables, not {kind:?}", a.property));
+    }
+    for id in &nodes {
+        let n = node(host, id.0)?;
+        if !desigma_doc::scope_allows(&scopes, &a.property, &n.kind) {
+            return Err(format!("variable '{}' scope does not allow property '{}' on node {}", a.variable_id, a.property, id.0));
+        }
+        if host.doc().resolve_variable(*id, &a.variable_id).is_none() {
+            return Err(format!("variable '{}' has no value for node {} in its current mode", a.variable_id, id.0));
+        }
+    }
+    let mut updates = Vec::new();
+    for id in &nodes {
+        let value = host.doc().resolve_variable(*id, &a.variable_id).ok_or_else(|| format!("variable '{}' has no value for node {}", a.variable_id, id.0))?;
+        let mut n = node(host, id.0)?.clone();
+        n.variables.bindings.insert(a.property.clone(), a.variable_id.clone());
+        desigma_doc::set_bound_property(&mut n, &a.property, &value);
+        if host.doc().get(*id) != Some(&n) {
+            updates.push(Command::Update { node: Box::new(n) });
+        }
+    }
+    let changed = !updates.is_empty();
+    if changed {
+        host.exec(Command::Batch(updates))?;
+    }
+    Ok(json!({"node_ids":a.node_ids,"property":a.property,"variable_id":a.variable_id,"changed":changed}))
+}
+
+fn detach_variable<H: Host>(host: &mut H, a: DetachVariableArgs) -> Result<Value, String> {
+    let nodes = variable_nodes(host, &a.node_ids)?;
+    if desigma_doc::property_kind(&a.property).is_none() {
+        return Err(format!("unknown variable property '{}'", a.property));
+    }
+    let mut updates = Vec::new();
+    for id in &nodes {
+        let mut n = node(host, id.0)?.clone();
+        if n.variables.bindings.remove(&a.property).is_some() {
+            if let Some(value) = host.doc().bound_value(*id, &a.property) {
+                desigma_doc::set_bound_property(&mut n, &a.property, &value);
+            }
+            updates.push(Command::Update { node: Box::new(n) });
+        }
+    }
+    let changed = !updates.is_empty();
+    if changed {
+        host.exec(Command::Batch(updates))?;
+    }
+    Ok(json!({"node_ids":a.node_ids,"property":a.property,"changed":changed}))
+}
+
+fn set_variable_mode<H: Host>(host: &mut H, a: SetVariableModeArgs) -> Result<Value, String> {
+    let nodes = variable_nodes(host, &a.node_ids)?;
+    let store = VariableStore::from_doc(host.doc());
+    if !store.collections.contains_key(&a.collection_id) {
+        return Err(format!("variable collection {} not found", a.collection_id));
+    }
+    let mode = match a.mode.as_deref() {
+        Some(key) => Some(variable_mode_id(&store, &a.collection_id, key)?),
+        None => None,
+    };
+    let mut updates = Vec::new();
+    for id in &nodes {
+        let mut n = node(host, id.0)?.clone();
+        let changed = match &mode {
+            Some(mode) => {
+                n.variables.modes.get(&a.collection_id) != Some(mode) && {
+                    n.variables.modes.insert(a.collection_id.clone(), mode.clone());
+                    true
+                }
+            }
+            None => n.variables.modes.remove(&a.collection_id).is_some(),
+        };
+        if changed {
+            updates.push(Command::Update { node: Box::new(n) });
+        }
+    }
+    let changed = !updates.is_empty();
+    if changed {
+        host.exec(Command::Batch(updates))?;
+    }
+    Ok(json!({"node_ids":a.node_ids,"collection_id":a.collection_id,"mode_id":mode,"changed":changed}))
+}
+
 fn colour(spec: &str, field: &str) -> Result<Color, String> {
     Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid {field} colour: {spec} (use #RGB, #RRGGBB, #RRGGBBAA or none)"))
 }
@@ -1072,6 +1188,30 @@ struct SetVariableValueArgs {
     /// Mode name or id; defaults to the collection's default mode.
     mode: Option<String>,
     value: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BindVariableArgs {
+    node_ids: Vec<u64>,
+    property: String,
+    variable_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DetachVariableArgs {
+    node_ids: Vec<u64>,
+    property: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetVariableModeArgs {
+    node_ids: Vec<u64>,
+    collection_id: String,
+    /// Mode name or id; null or omitted clears the explicit mode.
+    mode: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1280,6 +1420,7 @@ pub fn tools() -> Vec<Value> {
     let text = json!({"type":"string","maxLength":100000,"description":"Plain text; limited to 100000 UTF-8 bytes."});
     let name = json!({"type":"string","maxLength":1024,"description":"Layer name; limited to 1024 UTF-8 bytes."});
     let variable_ref = json!({"type":"string","minLength":1,"maxLength":1024,"description":"Variable or collection ID returned by the variable tools."});
+    let node_ids = json!({"type":"array","items":id.clone(),"minItems":1,"maxItems":500,"description":"Non-page layer IDs."});
     let mut out = Vec::new();
     let mut add = |tool: &str, description: &str, properties: Value, required: Vec<&str>, read_only: bool, idempotent: bool| {
         out.push(json!({"name":format!("desigma_{tool}"),"description":description,
@@ -1333,6 +1474,30 @@ pub fn tools() -> Vec<Value> {
         "Set one mode's value for a variable. value is a literal for the variable's kind (hex string, number, string, or boolean) or {\"alias\":\"variable_id\"} for a same-kind alias without a cycle. mode defaults to the collection's default mode. Supports undo as one step; changes remain in memory until saved.",
         json!({"variable_id":variable_ref,"mode":{"type":"string","minLength":1,"maxLength":1024},"value":{}}),
         vec!["variable_id", "value"],
+        false,
+        true,
+    );
+    add(
+        "bind_variable",
+        "Bind a variable to one property on up to 500 layers. property uses Figma's boundVariables keys (fills/0, strokes/0, width, itemSpacing, fontSize, ...). The variable kind and scopes must allow the property, and its current value is written into the raw property so detaching keeps the look. One undo step; changes remain in memory until saved.",
+        json!({"node_ids":node_ids,"property":{"type":"string","minLength":1,"maxLength":128},"variable_id":variable_ref}),
+        vec!["node_ids", "property", "variable_id"],
+        false,
+        true,
+    );
+    add(
+        "detach_variable",
+        "Remove a variable binding from one property on up to 500 layers, writing the value it currently resolves to into the raw property. One undo step; changes remain in memory until saved.",
+        json!({"node_ids":node_ids,"property":{"type":"string","minLength":1,"maxLength":128}}),
+        vec!["node_ids", "property"],
+        false,
+        true,
+    );
+    add(
+        "set_variable_mode",
+        "Set or clear the explicit mode of a collection on up to 500 layers. mode accepts a mode name or id; null or omitted clears the explicit mode and inherits from the parent. One undo step; changes remain in memory until saved.",
+        json!({"node_ids":node_ids,"collection_id":variable_ref,"mode":{"type":"string","minLength":1,"maxLength":1024}}),
+        vec!["node_ids", "collection_id"],
         false,
         true,
     );
@@ -1682,8 +1847,133 @@ mod tests {
     }
 
     #[test]
+    fn variable_binding_bakes_current_mode_and_detaches() {
+        let mut e = Engine::default();
+        let collection = e.call("desigma_create_variable_collection", json!({"name":"Theme","modes":["Light","Dark"],"default_mode":"Light"})).unwrap()
+            ["collection"]
+            .clone();
+        let collection_id = collection["id"].as_str().unwrap().to_string();
+        let mode = |name: &str| collection["modes"].as_array().unwrap().iter().find(|m| m["name"] == name).unwrap()["id"].as_str().unwrap().to_string();
+        let dark = mode("Dark");
+        let variable = e
+            .call(
+                "desigma_create_variable",
+                json!({"collection_id":collection_id,"name":"Color/Brand","kind":"color","values":{"Light":"#2F5BFF","Dark":"#8AA2FF"}}),
+            )
+            .unwrap()["variable"]
+            .clone();
+        let variable_id = variable["id"].as_str().unwrap().to_string();
+        let rect = create(&mut e, "rectangle", "Card");
+        let bound = e.call("desigma_bind_variable", json!({"node_ids":[rect],"property":"fills/0","variable_id":variable_id})).unwrap();
+        assert_eq!(bound["changed"], true);
+        let node = e.doc.get(NodeId(rect)).unwrap();
+        assert_eq!(node.variables.bindings["fills/0"], variable_id);
+        assert_eq!(node.fills[0].kind, desigma_doc::PaintKind::Solid(Color::from_hex("#2F5BFF").unwrap()));
+
+        e.call("desigma_set_variable_mode", json!({"node_ids":[rect],"collection_id":collection_id,"mode":"Dark"})).unwrap();
+        assert_eq!(e.doc.variable_mode(NodeId(rect), &collection_id), Some(dark));
+        assert_eq!(e.doc.bound_value(NodeId(rect), "fills/0"), Some(VariableValue::Color(Color::from_hex("#8AA2FF").unwrap())));
+
+        e.call("desigma_detach_variable", json!({"node_ids":[rect],"property":"fills/0"})).unwrap();
+        let node = e.doc.get(NodeId(rect)).unwrap();
+        assert!(!node.variables.bindings.contains_key("fills/0"));
+        assert_eq!(node.fills[0].kind, desigma_doc::PaintKind::Solid(Color::from_hex("#8AA2FF").unwrap()));
+
+        e.call("desigma_undo", json!({})).unwrap();
+        let node = e.doc.get(NodeId(rect)).unwrap();
+        assert_eq!(node.variables.bindings["fills/0"], variable_id);
+        assert_eq!(node.fills[0].kind, desigma_doc::PaintKind::Solid(Color::from_hex("#2F5BFF").unwrap()));
+    }
+
+    #[test]
+    fn variable_binding_multiple_nodes_is_one_undo_step() {
+        let mut e = Engine::default();
+        let collection = e.call("desigma_create_variable_collection", json!({"name":"Theme","modes":["Light"]})).unwrap()["collection"].clone();
+        let collection_id = collection["id"].as_str().unwrap().to_string();
+        let variable = e
+            .call("desigma_create_variable", json!({"collection_id":collection_id,"name":"Brand","kind":"color","values":{"Light":"#2F5BFF"}}))
+            .unwrap()["variable"]
+            .clone();
+        let variable_id = variable["id"].as_str().unwrap().to_string();
+        let a = create(&mut e, "rectangle", "A");
+        let b = create(&mut e, "rectangle", "B");
+        e.call("desigma_bind_variable", json!({"node_ids":[a,b],"property":"fills/0","variable_id":variable_id})).unwrap();
+        assert!(e.doc.get(NodeId(a)).unwrap().variables.bindings.contains_key("fills/0"));
+        assert!(e.doc.get(NodeId(b)).unwrap().variables.bindings.contains_key("fills/0"));
+        e.call("desigma_undo", json!({})).unwrap();
+        assert!(!e.doc.get(NodeId(a)).unwrap().variables.bindings.contains_key("fills/0"));
+        assert!(!e.doc.get(NodeId(b)).unwrap().variables.bindings.contains_key("fills/0"));
+        e.call("desigma_redo", json!({})).unwrap();
+        assert!(e.doc.get(NodeId(a)).unwrap().variables.bindings.contains_key("fills/0"));
+        assert!(e.doc.get(NodeId(b)).unwrap().variables.bindings.contains_key("fills/0"));
+    }
+
+    #[test]
+    fn variable_binding_rejects_invalid_input_atomically() {
+        let mut e = Engine::default();
+        let collection = e.call("desigma_create_variable_collection", json!({"name":"Theme","modes":["Light","Dark"],"default_mode":"Light"})).unwrap()
+            ["collection"]
+            .clone();
+        let collection_id = collection["id"].as_str().unwrap().to_string();
+        let color = e.call("desigma_create_variable", json!({"collection_id":collection_id,"name":"Color/Brand","kind":"color"})).unwrap()["variable"].clone();
+        let color_id = color["id"].as_str().unwrap().to_string();
+        let number =
+            e.call("desigma_create_variable", json!({"collection_id":collection_id,"name":"Size/Radius","kind":"number"})).unwrap()["variable"].clone();
+        let number_id = number["id"].as_str().unwrap().to_string();
+        let text_only = e
+            .call("desigma_create_variable", json!({"collection_id":collection_id,"name":"Text/Strong","kind":"color","scopes":["TEXT_FILL"]}))
+            .unwrap()["variable"]
+            .clone();
+        let text_only_id = text_only["id"].as_str().unwrap().to_string();
+        let rect = create(&mut e, "rectangle", "Card");
+        let before = e.doc.to_json().unwrap();
+        for (name, args) in [
+            ("desigma_bind_variable", json!({"node_ids":[1],"property":"fills/0","variable_id":color_id})),
+            ("desigma_bind_variable", json!({"node_ids":[9999],"property":"fills/0","variable_id":color_id})),
+            ("desigma_bind_variable", json!({"node_ids":[rect],"property":"banana","variable_id":color_id})),
+            ("desigma_bind_variable", json!({"node_ids":[rect],"property":"fills/0","variable_id":number_id})),
+            ("desigma_bind_variable", json!({"node_ids":[rect],"property":"fills/0","variable_id":text_only_id})),
+            ("desigma_bind_variable", json!({"node_ids":[],"property":"fills/0","variable_id":color_id})),
+            ("desigma_bind_variable", json!({"node_ids":vec![rect;501],"property":"fills/0","variable_id":color_id})),
+            ("desigma_detach_variable", json!({"node_ids":[1],"property":"fills/0"})),
+            ("desigma_detach_variable", json!({"node_ids":[rect],"property":"banana"})),
+            ("desigma_set_variable_mode", json!({"node_ids":[rect],"collection_id":"missing"})),
+            ("desigma_set_variable_mode", json!({"node_ids":[rect],"collection_id":collection_id,"mode":"Missing"})),
+            ("desigma_set_variable_mode", json!({"node_ids":[1],"collection_id":collection_id})),
+            ("desigma_set_variable_mode", json!({"node_ids":[],"collection_id":collection_id})),
+        ] {
+            let err = e.call(name, args).unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+            assert_eq!(e.doc.to_json().unwrap(), before, "{name} changed the document");
+        }
+    }
+
+    #[test]
+    fn variable_mode_can_be_set_and_cleared() {
+        let mut e = Engine::default();
+        let collection = e.call("desigma_create_variable_collection", json!({"name":"Theme","modes":["Light","Dark"]})).unwrap()["collection"].clone();
+        let collection_id = collection["id"].as_str().unwrap().to_string();
+        let dark = collection["modes"].as_array().unwrap().iter().find(|m| m["name"] == "Dark").unwrap()["id"].as_str().unwrap().to_string();
+        let rect = create(&mut e, "rectangle", "Card");
+        let set = e.call("desigma_set_variable_mode", json!({"node_ids":[rect],"collection_id":collection_id,"mode":"Dark"})).unwrap();
+        assert_eq!(set["changed"], true);
+        assert_eq!(e.doc.get(NodeId(rect)).unwrap().variables.modes[&collection_id], dark);
+        let cleared = e.call("desigma_set_variable_mode", json!({"node_ids":[rect],"collection_id":collection_id})).unwrap();
+        assert_eq!(cleared["changed"], true);
+        assert!(!e.doc.get(NodeId(rect)).unwrap().variables.modes.contains_key(&collection_id));
+    }
+
+    #[test]
     fn variable_tools_are_registered_as_writing_tools() {
-        for name in ["desigma_create_variable_collection", "desigma_add_variable_mode", "desigma_create_variable", "desigma_set_variable_value"] {
+        for name in [
+            "desigma_create_variable_collection",
+            "desigma_add_variable_mode",
+            "desigma_create_variable",
+            "desigma_set_variable_value",
+            "desigma_bind_variable",
+            "desigma_detach_variable",
+            "desigma_set_variable_mode",
+        ] {
             let t = tools().into_iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("missing {name}"));
             assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
             assert_eq!(t["inputSchema"]["additionalProperties"], false, "{name}");
@@ -1691,6 +1981,9 @@ mod tests {
         let set = tools().into_iter().find(|t| t["name"] == "desigma_set_variable_value").unwrap();
         assert_eq!(set["annotations"]["idempotentHint"], true);
         assert_eq!(set["inputSchema"]["required"], json!(["variable_id", "value"]));
+        let bind = tools().into_iter().find(|t| t["name"] == "desigma_bind_variable").unwrap();
+        assert_eq!(bind["annotations"]["idempotentHint"], true);
+        assert_eq!(bind["inputSchema"]["required"], json!(["node_ids", "property", "variable_id"]));
     }
 
     #[test]

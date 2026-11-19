@@ -89,6 +89,9 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_add_variable_mode` | Append a mode to a collection; existing variables inherit the default-mode value. |
 | `desigma_create_variable` | Create a color, number, string, or boolean variable with per-mode literals or aliases. |
 | `desigma_set_variable_value` | Set one mode's literal or alias for a variable. |
+| `desigma_bind_variable` | Bind a variable to one property on up to 500 layers; the resolved value is baked into the raw property. |
+| `desigma_detach_variable` | Remove a binding and bake the value it currently resolves to into the raw property. |
+| `desigma_set_variable_mode` | Set or clear a collection's explicit mode on up to 500 layers. |
 | `desigma_generate_code` | Return CSS, Tailwind, React, SwiftUI, Compose, or SVG source without writing a file. |
 | `desigma_create_node` | Add a frame, rectangle, ellipse, or text layer to a container. |
 | `desigma_duplicate_node` | Copy a non-page layer and its subtree in place, after the source. New IDs; optional parent-space `offset` (10 by default, 0 in auto layout). Refuses page roots and layers inside an instance. |
@@ -115,7 +118,7 @@ Turn the bridge on in **Preferences → Allow MCP agents to control this editor*
 
 The server shares Desigma's importers, document types, variables, undo commands, and exporters. Code generation resolves bound variable values. Import and generated-code fidelity follow the underlying Desigma implementations; generated source is a handoff starting point.
 
-In an isolated file session, layer edits do not run the desktop application's auto-layout reflow, text measurement or connector rerouting, so do not assume that resizing a container rearranges its children. Component edits do follow the editor's rules: a change to a layer inside an instance is recorded as an override on that layer, and a change to a main component re-syncs its instances, both in the same undo step. With the agent bridge on, edits run through the editor's transactions and are laid out like the editor's own edits (auto-layout reflow, group fit, connector rerouting, component-instance sync). Variable collections, modes, values and aliases are editable; binding variables to node properties and arbitrary paint properties are not exposed in this version. `desigma_duplicate_node` refuses layers inside an instance: a structural instance edit is not part of the override model, so duplicate the instance or edit the main component instead.
+In an isolated file session, layer edits do not run the desktop application's auto-layout reflow, text measurement or connector rerouting, so do not assume that resizing a container rearranges its children. Component edits do follow the editor's rules: a change to a layer inside an instance is recorded as an override on that layer, and a change to a main component re-syncs its instances, both in the same undo step. With the agent bridge on, edits run through the editor's transactions and are laid out like the editor's own edits (auto-layout reflow, group fit, connector rerouting, component-instance sync). Variable collections, modes, values, aliases and node bindings are editable; arbitrary paint properties are not exposed in this version. `desigma_duplicate_node` refuses layers inside an instance: a structural instance edit is not part of the override model, so duplicate the instance or edit the main component instead.
 
 ## Verification and evaluation
 

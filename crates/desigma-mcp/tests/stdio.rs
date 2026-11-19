@@ -16,11 +16,11 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
         let schema = tools.iter().find(|t| t.name == "desigma_delete_page").unwrap().input_schema.clone();
         assert_eq!(schema["properties"]["node_id"]["type"], "integer");
-        // 32 upstream tools + 5 for components, instances and page rename
+        // 35 upstream tools + 5 for components, instances and page rename
         for name in ["desigma_create_component", "desigma_create_instance", "desigma_detach_instance", "desigma_sync_instances", "desigma_rename_page"] {
             assert!(tools.iter().any(|t| t.name == name), "missing component tool {name}");
         }
-        assert_eq!(tools.len(), 37);
+        assert_eq!(tools.len(), 40);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -197,6 +197,23 @@ async fn variables_round_trip_over_stdio() {
         let vars = client.call_tool(call("desigma_get_variables", json!({}))).await.unwrap();
         let vars = vars.structured_content.unwrap();
         assert_eq!(vars["variables"][alias_id.as_str().unwrap()]["values"][light.as_str().unwrap()]["Alias"], variable_id);
+
+        let node = client.call_tool(call("desigma_create_node", json!({"parent_id":1,"kind":"rectangle","name":"Bound"}))).await.unwrap();
+        let node_id = node.structured_content.unwrap()["node"]["id"].clone();
+        let bound = client
+            .call_tool(call("desigma_bind_variable", json!({"node_ids":[node_id.clone()],"property":"fills/0","variable_id":variable_id.clone()})))
+            .await
+            .unwrap();
+        assert_eq!(bound.is_error, Some(false), "{bound:?}");
+        let effective = client.call_tool(call("desigma_get_variables", json!({"node_id":node_id.clone()}))).await.unwrap();
+        assert_eq!(effective.structured_content.unwrap()["effective_bindings"][0]["property"], "fills/0");
+        let mode = client
+            .call_tool(call("desigma_set_variable_mode", json!({"node_ids":[node_id.clone()],"collection_id":collection_id,"mode":"Dark"})))
+            .await
+            .unwrap();
+        assert_eq!(mode.is_error, Some(false), "{mode:?}");
+        let detached = client.call_tool(call("desigma_detach_variable", json!({"node_ids":[node_id],"property":"fills/0"}))).await.unwrap();
+        assert_eq!(detached.is_error, Some(false), "{detached:?}");
 
         let added = client.call_tool(call("desigma_add_variable_mode", json!({"collection_id":collection_id,"name":"High contrast"}))).await.unwrap();
         assert_eq!(added.is_error, Some(false), "{added:?}");
