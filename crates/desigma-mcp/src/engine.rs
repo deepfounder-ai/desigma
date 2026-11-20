@@ -121,8 +121,6 @@ impl Engine {
     }
 }
 
-/// Every engine tool that edits the document. Transports use it to track unsaved edits and the
-/// editor bridge to refuse edits mid-gesture, so a new editing tool must be listed here.
 /// Node-edit tools that `desigma_batch` may compose into one undo step.
 pub const BATCHABLE: &[&str] = &[
     "desigma_create_node",
@@ -136,6 +134,8 @@ pub const BATCHABLE: &[&str] = &[
     "desigma_delete_node",
 ];
 
+/// Every engine tool that edits the document. Transports use it to track unsaved edits and the
+/// editor bridge to refuse edits mid-gesture, so a new editing tool must be listed here.
 pub const EDIT_TOOLS: &[&str] = &[
     "desigma_batch",
     "desigma_create_node",
