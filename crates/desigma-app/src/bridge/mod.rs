@@ -20,6 +20,34 @@ pub struct BridgeState {
 
 /// The editor as a tool host: commands go through `Tx` so component sync and rerouting apply.
 struct AppHost<'a>(&'a mut App);
+/// Nodes whose layout a command can change, including commands inside a batch. Collected
+/// before the edit so a removed node's parent is still known; callers filter ids that are gone.
+fn collect_touched(doc: &Document, cmd: &Command, around: &mut Vec<NodeId>, moved: &mut Vec<NodeId>) {
+    match cmd {
+        Command::Batch(cmds) => {
+            for cmd in cmds {
+                collect_touched(doc, cmd, around, moved);
+            }
+        }
+        Command::Insert { parent, .. } => around.push(*parent),
+        Command::Remove { id } => {
+            if let Some(parent) = doc.get(*id).and_then(|n| n.parent) {
+                around.push(parent);
+            }
+        }
+        Command::Update { node } => around.push(node.id),
+        Command::Reparent { id, parent, .. } => {
+            around.push(*id);
+            around.push(*parent);
+            if let Some(old) = doc.get(*id).and_then(|n| n.parent) {
+                around.push(old);
+            }
+            moved.push(*id);
+        }
+        _ => {}
+    }
+}
+
 impl Host for AppHost<'_> {
     fn doc(&self) -> &Document {
         &self.0.doc
@@ -27,29 +55,24 @@ impl Host for AppHost<'_> {
     fn exec(&mut self, cmd: Command) -> Result<(), String> {
         let doc = &mut self.0.doc;
         // Lay out what the edit touched, as the editor's own create/delete/property handlers do.
-        let around = match &cmd {
-            Command::Insert { parent, .. } => Some(*parent),
-            Command::Remove { id } => doc.get(*id).and_then(|n| n.parent),
-            Command::Update { node } => Some(node.id),
-            _ => None,
-        };
-        // A move lays out the parent it left and the one it joined, and touches the moved layer
-        // so the connectors attached to it are rerouted on commit, as a drag on the canvas does.
-        let moved = match &cmd {
-            Command::Reparent { id, parent, .. } => Some((*id, doc.get(*id).and_then(|n| n.parent), *parent)),
-            _ => None,
-        };
+        // A batch can contain several such commands, so collect them all before applying.
+        let mut around = Vec::new();
+        let mut moved = Vec::new();
+        collect_touched(doc, &cmd, &mut around, &mut moved);
         let mut tx = crate::edit::Tx::new();
         tx.cmd(doc, cmd).map_err(|e| e.to_string())?;
-        if let Some(id) = around.filter(|id| doc.get(*id).is_some()) {
-            crate::layout::relayout_around(doc, &mut tx.ed, id);
+        around.sort_unstable();
+        around.dedup();
+        for id in around {
+            if doc.get(id).is_some() {
+                crate::layout::relayout_around(doc, &mut tx.ed, id);
+            }
         }
-        if let Some((id, old, new)) = moved {
-            tx.ed.touch(doc, id);
-            for p in old.into_iter().chain([new]) {
-                if doc.get(p).is_some() {
-                    crate::layout::relayout_around(doc, &mut tx.ed, p);
-                }
+        moved.sort_unstable();
+        moved.dedup();
+        for id in moved {
+            if doc.get(id).is_some() {
+                tx.ed.touch(doc, id);
             }
         }
         if self.0.run_tx(tx) {

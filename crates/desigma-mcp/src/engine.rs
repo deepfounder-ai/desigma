@@ -77,6 +77,44 @@ impl Host for Engine {
     }
 }
 
+/// A host that applies each call to a scratch document and records its command, so a
+/// sequence of node tools can be validated before one `Command::Batch` reaches the real
+/// document and the undo stack.
+struct BatchHost<'a> {
+    doc: &'a mut Document,
+    commands: Vec<Command>,
+}
+
+impl Host for BatchHost<'_> {
+    fn doc(&self) -> &Document {
+        self.doc
+    }
+    fn exec(&mut self, cmd: Command) -> Result<(), String> {
+        let original = cmd.clone();
+        cmd.apply(self.doc).map_err(|e| e.to_string())?;
+        self.commands.push(original);
+        Ok(())
+    }
+    fn undo(&mut self) -> Result<bool, String> {
+        Err("undo cannot run inside a batch".into())
+    }
+    fn redo(&mut self) -> Result<bool, String> {
+        Err("redo cannot run inside a batch".into())
+    }
+    fn can_undo(&self) -> bool {
+        false
+    }
+    fn can_redo(&self) -> bool {
+        false
+    }
+    fn alloc_id(&mut self) -> Result<NodeId, String> {
+        self.doc.try_alloc_id().ok_or_else(|| "Document has exhausted node IDs".into())
+    }
+    fn doc_mut(&mut self) -> &mut Document {
+        self.doc
+    }
+}
+
 impl Engine {
     pub fn call(&mut self, name: &str, args: Value) -> Result<Value, String> {
         call(self, name, args)
@@ -85,7 +123,21 @@ impl Engine {
 
 /// Every engine tool that edits the document. Transports use it to track unsaved edits and the
 /// editor bridge to refuse edits mid-gesture, so a new editing tool must be listed here.
+/// Node-edit tools that `desigma_batch` may compose into one undo step.
+pub const BATCHABLE: &[&str] = &[
+    "desigma_create_node",
+    "desigma_duplicate_node",
+    "desigma_update_node",
+    "desigma_move_node",
+    "desigma_set_appearance",
+    "desigma_set_text_style",
+    "desigma_set_auto_layout",
+    "desigma_set_layout_child",
+    "desigma_delete_node",
+];
+
 pub const EDIT_TOOLS: &[&str] = &[
+    "desigma_batch",
     "desigma_create_node",
     "desigma_duplicate_node",
     "desigma_create_page",
@@ -185,6 +237,7 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         "desigma_bind_variable" => bind_variable(host, parse(args)?),
         "desigma_detach_variable" => detach_variable(host, parse(args)?),
         "desigma_set_variable_mode" => set_variable_mode(host, parse(args)?),
+        "desigma_batch" => batch(host, parse(args)?),
         "desigma_generate_code" => {
             let a: CodeArgs = parse(args)?;
             let id = node(host, a.node_id)?.id;
@@ -1252,6 +1305,67 @@ fn set_layout_child<H: Host>(host: &mut H, a: LayoutChildArgs) -> Result<Value, 
     Ok(json!({"node_id":a.node_id,"layout_child":layout_child,"changed":changed}))
 }
 
+fn resolve_batch_ref(value: &Value, results: &[Option<u64>]) -> Result<Option<Value>, String> {
+    let Some(text) = value.as_str() else { return Ok(None) };
+    let Some(rest) = text.strip_prefix('$') else { return Ok(None) };
+    let index: usize = rest.parse().map_err(|_| format!("invalid node reference '{text}'"))?;
+    let id =
+        results.get(index).and_then(|id| *id).ok_or_else(|| format!("node reference '{text}' must point at an earlier operation that returned a node id"))?;
+    Ok(Some(json!(id)))
+}
+
+fn resolve_batch_refs(args: &mut Value, results: &[Option<u64>]) -> Result<(), String> {
+    let Some(obj) = args.as_object_mut() else { return Err("arguments must be an object".into()) };
+    for key in ["node_id", "parent_id"] {
+        if let Some(value) = obj.get_mut(key) {
+            if let Some(resolved) = resolve_batch_ref(value, results)? {
+                *value = resolved;
+            }
+        }
+    }
+    if let Some(node_ids) = obj.get_mut("node_ids").and_then(Value::as_array_mut) {
+        for value in node_ids {
+            if let Some(resolved) = resolve_batch_ref(value, results)? {
+                *value = resolved;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn batch<H: Host>(host: &mut H, a: BatchArgs) -> Result<Value, String> {
+    if a.operations.is_empty() {
+        return Err("operations must contain at least one operation".into());
+    }
+    if a.operations.len() > 100 {
+        return Err("operations accepts at most 100 entries".into());
+    }
+    for op in &a.operations {
+        if !BATCHABLE.contains(&op.tool.as_str()) {
+            return Err(format!("tool '{}' is not batchable; use one of: {}", op.tool, BATCHABLE.join(", ")));
+        }
+    }
+
+    let mut scratch = host.doc().clone();
+    let mut batch_host = BatchHost { doc: &mut scratch, commands: Vec::new() };
+    let mut results = Vec::with_capacity(a.operations.len());
+    let mut summaries = Vec::with_capacity(a.operations.len());
+    for (index, op) in a.operations.iter().enumerate() {
+        let mut args = op.arguments.clone().unwrap_or_else(|| json!({}));
+        resolve_batch_refs(&mut args, &results)?;
+        let result = call(&mut batch_host, &op.tool, args).map_err(|e| format!("operation {index} ({}): {e}", op.tool))?;
+        let node_id = result.get("node_id").and_then(Value::as_u64).or_else(|| result.get("node").and_then(|n| n.get("id")).and_then(Value::as_u64));
+        results.push(node_id);
+        summaries.push(json!({"index":index,"node_id":node_id}));
+    }
+    let commands = batch_host.commands;
+    let changed = !commands.is_empty();
+    if changed {
+        host.exec(Command::Batch(commands))?;
+    }
+    Ok(json!({"changed":changed,"operations":a.operations.len(),"results":summaries}))
+}
+
 fn colour(spec: &str, field: &str) -> Result<Color, String> {
     Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid {field} colour: {spec} (use #RGB, #RRGGBB, #RRGGBBAA or none)"))
 }
@@ -1519,6 +1633,20 @@ struct LayoutChildArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BatchArgs {
+    operations: Vec<BatchOp>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchOp {
+    tool: String,
+    #[serde(default)]
+    arguments: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CreateComponentArgs {
     node_id: u64,
     /// Main component name; the layer keeps its own name when omitted.
@@ -1740,6 +1868,14 @@ pub fn tools() -> Vec<Value> {
         "Duplicate a non-page layer and its whole subtree in place, immediately after the source under the same parent. New node IDs; the copy keeps the source name. offset moves the copied root in parent space; it defaults to 10, or 0 when the parent uses auto layout. Refuses page roots and layers inside an instance. Supports undo as one step; changes remain in memory until saved.",
         json!({"node_id":id,"offset":{"type":"number","minimum":0,"maximum":100000,"description":"Parent-space offset for the copied root; defaults to 10, or 0 when the parent uses auto layout."}}),
         vec!["node_id"],
+        false,
+        false,
+    );
+    add(
+        "batch",
+        "Apply 1-100 node edits as one undo step. Each operation is {tool, arguments}; allowed tools are create_node, duplicate_node, update_node, move_node, set_appearance, set_text_style, set_auto_layout, set_layout_child, and delete_node. A later operation can reference a node id returned by an earlier operation with \"$INDEX\" in node_id, parent_id, or entries of node_ids. Validation runs on a scratch document; a failed operation leaves the document and history unchanged.",
+        json!({"operations":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"tool":{"type":"string","enum":["desigma_create_node","desigma_duplicate_node","desigma_update_node","desigma_move_node","desigma_set_appearance","desigma_set_text_style","desigma_set_auto_layout","desigma_set_layout_child","desigma_delete_node"]},"arguments":{"type":"object","additionalProperties":true}},"required":["tool"],"additionalProperties":false}}}),
+        vec!["operations"],
         false,
         false,
     );
@@ -2350,6 +2486,79 @@ mod tests {
             assert_eq!(t["annotations"]["idempotentHint"], true, "{name}");
             assert_eq!(t["inputSchema"]["required"], json!(["node_id"]), "{name}");
         }
+    }
+
+    #[test]
+    fn batch_applies_node_edits_with_references_and_one_undo_step() {
+        let mut e = Engine::default();
+        let result = e
+            .call(
+                "desigma_batch",
+                json!({"operations":[
+                    {"tool":"desigma_create_node","arguments":{"parent_id":1,"kind":"frame","name":"Card","x":0,"y":0,"width":320,"height":200}},
+                    {"tool":"desigma_create_node","arguments":{"parent_id":"$0","kind":"rectangle","name":"Inner","x":12,"y":12,"width":100,"height":40}},
+                    {"tool":"desigma_update_node","arguments":{"node_id":"$1","name":"Inner renamed","x":16}},
+                    {"tool":"desigma_set_appearance","arguments":{"node_id":"$1","fill":"#FF6B4A","corner_radius":8}},
+                    {"tool":"desigma_duplicate_node","arguments":{"node_id":"$0","offset":20}},
+                    {"tool":"desigma_update_node","arguments":{"node_id":"$4","name":"Card copy"}},
+                    {"tool":"desigma_set_auto_layout","arguments":{"node_id":"$0","direction":"vertical","item_spacing":8,"padding":[12,12,12,12]}}
+                ]}),
+            )
+            .unwrap();
+        assert_eq!(result["changed"], true);
+        assert_eq!(result["operations"], 7);
+        let ids: Vec<u64> = result["results"].as_array().unwrap().iter().map(|r| r["node_id"].as_u64().unwrap()).collect();
+        assert_eq!(ids.len(), 7);
+        assert_eq!(e.doc.get(NodeId(1)).unwrap().children, vec![NodeId(ids[0]), NodeId(ids[4])]);
+        let child = e.doc.get(NodeId(ids[1])).unwrap();
+        assert_eq!(child.name, "Inner renamed");
+        assert_eq!(child.transform.tx, 16.0);
+        assert_eq!(child.fills[0].kind, desigma_doc::PaintKind::Solid(Color::from_hex("#FF6B4A").unwrap()));
+        assert_eq!(e.doc.get(NodeId(ids[4])).unwrap().name, "Card copy");
+        assert!(e.doc.get(NodeId(ids[0])).unwrap().kind.frame_props().unwrap().auto_layout.is_some());
+        assert_eq!(e.history.undo_len(), 1);
+
+        e.call("desigma_undo", json!({})).unwrap();
+        assert!(e.doc.get(NodeId(1)).unwrap().children.is_empty());
+        assert!(e.doc.get(NodeId(ids[0])).is_none());
+        e.call("desigma_redo", json!({})).unwrap();
+        assert_eq!(e.doc.get(NodeId(1)).unwrap().children.len(), 2);
+    }
+
+    #[test]
+    fn batch_rejects_invalid_operations_without_touching_the_document() {
+        let mut e = Engine::default();
+        let base = create(&mut e, "rectangle", "Base");
+        let before = e.doc.to_json().unwrap();
+        let before_undo = e.history.undo_len();
+        let too_many: Vec<Value> = (0..101).map(|_| json!({"tool":"desigma_update_node","arguments":{"node_id":base}})).collect();
+        for (name, args) in [
+            ("desigma_batch", json!({"operations":[]})),
+            ("desigma_batch", json!({"operations":[{"tool":"desigma_import_svg","arguments":{}}]})),
+            ("desigma_batch", json!({"operations":too_many})),
+            ("desigma_batch", json!({"operations":[{"tool":"desigma_update_node","arguments":{"node_id":9999}}]})),
+            ("desigma_batch", json!({"operations":[{"tool":"desigma_update_node","arguments":{"node_id":"$5"}}]})),
+            ("desigma_batch", json!({"operations":[{"tool":"desigma_update_node","arguments":[]}]})),
+            ("desigma_batch", json!({"operations":[{"tool":"desigma_update_node","arguments":{"node_id":base,"width":-1}}]})),
+        ] {
+            let err = e.call(name, args).unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+            assert_eq!(e.doc.to_json().unwrap(), before, "{name} changed the document");
+            assert_eq!(e.history.undo_len(), before_undo, "{name} pushed history");
+        }
+    }
+
+    #[test]
+    fn batch_is_registered_as_a_writing_tool() {
+        let t = tools().into_iter().find(|t| t["name"] == "desigma_batch").unwrap();
+        assert_eq!(t["annotations"]["readOnlyHint"], false);
+        assert_eq!(t["annotations"]["idempotentHint"], false);
+        assert_eq!(t["inputSchema"]["required"], json!(["operations"]));
+        assert!(t["inputSchema"]["properties"]["operations"]["items"]["properties"]["tool"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "desigma_create_node"));
     }
 
     #[test]

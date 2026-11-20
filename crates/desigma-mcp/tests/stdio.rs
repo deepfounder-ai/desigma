@@ -16,11 +16,11 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
         let schema = tools.iter().find(|t| t.name == "desigma_delete_page").unwrap().input_schema.clone();
         assert_eq!(schema["properties"]["node_id"]["type"], "integer");
-        // 37 upstream tools + 5 for components, instances and page rename
+        // 38 upstream tools + 5 for components, instances and page rename
         for name in ["desigma_create_component", "desigma_create_instance", "desigma_detach_instance", "desigma_sync_instances", "desigma_rename_page"] {
             assert!(tools.iter().any(|t| t.name == name), "missing component tool {name}");
         }
-        assert_eq!(tools.len(), 42);
+        assert_eq!(tools.len(), 43);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -138,6 +138,40 @@ async fn duplicating_a_layer_copies_its_subtree_and_undoes_as_one_step() {
         assert_eq!(gone.is_error, Some(true));
         let listed = client.call_tool(call("desigma_list_nodes", json!({"parent_id":page}))).await.unwrap();
         assert_eq!(listed.structured_content.unwrap()["total"], 1);
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
+/// A batch creates a parent and child with `$0` references in one undo step.
+#[tokio::test]
+async fn batch_creates_nodes_with_references_over_stdio() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+        let batched = client
+            .call_tool(call(
+                "desigma_batch",
+                json!({"operations":[
+                    {"tool":"desigma_create_node","arguments":{"parent_id":1,"kind":"frame","name":"Card"}},
+                    {"tool":"desigma_create_node","arguments":{"parent_id":"$0","kind":"rectangle","name":"Inner"}}
+                ]}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(batched.is_error, Some(false), "{batched:?}");
+        let body = batched.structured_content.unwrap();
+        let frame_id = body["results"][0]["node_id"].clone();
+        let child_id = body["results"][1]["node_id"].clone();
+        let child = client.call_tool(call("desigma_get_node", json!({"node_id":child_id}))).await.unwrap();
+        assert_eq!(child.structured_content.unwrap()["node"]["parent"], frame_id);
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let gone = client.call_tool(call("desigma_get_node", json!({"node_id":child_id}))).await.unwrap();
+        assert_eq!(gone.is_error, Some(true));
         client.cancel().await.unwrap();
     })
     .await

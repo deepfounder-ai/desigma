@@ -96,6 +96,7 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_create_node` | Add a frame, rectangle, ellipse, or text layer to a container. |
 | `desigma_duplicate_node` | Copy a non-page layer and its subtree in place, after the source. New IDs; optional parent-space `offset` (10 by default, 0 in auto layout). Refuses page roots and layers inside an instance. |
 | `desigma_update_node` | Change name, position, dimensions, visibility, opacity, or plain text. |
+| `desigma_batch` | Apply 1–100 node edits as one undo step. Later operations reference node IDs from earlier ones with `$INDEX` in `node_id`, `parent_id`, or `node_ids`. |
 | `desigma_set_auto_layout` | Create, update, or remove auto layout on a frame, component, or instance. |
 | `desigma_set_layout_child` | Set a layer's auto-layout sizing, grow, min/max, or absolute behavior. |
 | `desigma_delete_node` | Remove a non-page layer and its descendants. |
@@ -120,7 +121,7 @@ Turn the bridge on in **Preferences → Allow MCP agents to control this editor*
 
 The server shares Desigma's importers, document types, variables, undo commands, and exporters. Code generation resolves bound variable values. Import and generated-code fidelity follow the underlying Desigma implementations; generated source is a handoff starting point.
 
-In an isolated file session, layer edits do not run the desktop application's auto-layout reflow, text measurement or connector rerouting, so do not assume that resizing a container rearranges its children. Component edits do follow the editor's rules: a change to a layer inside an instance is recorded as an override on that layer, and a change to a main component re-syncs its instances, both in the same undo step. With the agent bridge on, edits run through the editor's transactions and are laid out like the editor's own edits (auto-layout reflow, group fit, connector rerouting, component-instance sync). Variable collections, modes, values, aliases and node bindings are editable; arbitrary paint properties are not exposed in this version. `desigma_duplicate_node` refuses layers inside an instance: a structural instance edit is not part of the override model, so duplicate the instance or edit the main component instead.
+In an isolated file session, layer edits do not run the desktop application's auto-layout reflow, text measurement or connector rerouting, so do not assume that resizing a container rearranges its children. Component edits do follow the editor's rules: a change to a layer inside an instance is recorded as an override on that layer, and a change to a main component re-syncs its instances, both in the same undo step. With the agent bridge on, edits run through the editor's transactions and are laid out like the editor's own edits (auto-layout reflow, group fit, connector rerouting, component-instance sync). Variable collections, modes, values, aliases and node bindings are editable; arbitrary paint properties are not exposed in this version. `desigma_batch` composes node edits only: pages, variables, components, SVG import and motion are not batchable. `desigma_duplicate_node` refuses layers inside an instance: a structural instance edit is not part of the override model, so duplicate the instance or edit the main component instead.
 
 ## Verification and evaluation
 
