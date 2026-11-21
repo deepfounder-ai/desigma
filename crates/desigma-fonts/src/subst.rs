@@ -36,6 +36,34 @@ pub static SUBSTITUTIONS: &[(&str, &str)] = &[
     ("ui-monospace", "JetBrains Mono"),
     ("gotham", "Montserrat"),
     ("futura", "Jost"),
+    // CJK: the older Google naming and the system fonts of every platform map to the family
+    // Fontsource actually serves (it splits the CJK families per region, and has no
+    // "... CJK SC"/"PingFang"/"Hiragino"/"YaHei" entries at all).
+    ("noto sans cjk sc", "Noto Sans SC"),
+    ("noto sans cjk tc", "Noto Sans TC"),
+    ("noto sans cjk hk", "Noto Sans HK"),
+    ("noto sans cjk jp", "Noto Sans JP"),
+    ("noto sans cjk kr", "Noto Sans KR"),
+    ("pingfang sc", "Noto Sans SC"),
+    ("pingfang tc", "Noto Sans TC"),
+    ("pingfang hk", "Noto Sans HK"),
+    ("hiragino sans gb", "Noto Sans SC"),
+    ("hiragino sans", "Noto Sans JP"),
+    ("heiti sc", "Noto Sans SC"),
+    ("heiti tc", "Noto Sans TC"),
+    ("stheiti", "Noto Sans SC"),
+    ("songti sc", "Noto Serif SC"),
+    ("songti tc", "Noto Serif TC"),
+    ("microsoft yahei", "Noto Sans SC"),
+    ("微软雅黑", "Noto Sans SC"),
+    ("simsun", "Noto Serif SC"),
+    ("simhei", "Noto Sans SC"),
+    ("yu gothic", "Noto Sans JP"),
+    ("meiryo", "Noto Sans JP"),
+    ("malgun gothic", "Noto Sans KR"),
+    ("apple sd gothic neo", "Noto Sans KR"),
+    // Fontsource has no DejaVu Sans Mono; keep the monospace look.
+    ("dejavu sans mono", "JetBrains Mono"),
 ];
 
 /// Open-source stand-in for a proprietary `family`, if we know one
@@ -68,6 +96,26 @@ mod tests {
         assert_eq!(substitute("Gotham"), Some("Montserrat"));
         assert_eq!(substitute("Futura"), Some("Jost"));
         assert_eq!(substitute("\"Segoe UI\""), Some("Inter"));
+    }
+
+    #[test]
+    fn maps_cjk_and_monospace_names_to_fontsource_families() {
+        // Fontsource has none of these, so left alone they end in "font not found".
+        assert_eq!(substitute("Noto Sans CJK SC"), Some("Noto Sans SC"));
+        assert_eq!(substitute("Noto Sans CJK TC"), Some("Noto Sans TC"));
+        assert_eq!(substitute("PingFang SC"), Some("Noto Sans SC"));
+        assert_eq!(substitute("PingFang TC"), Some("Noto Sans TC"));
+        assert_eq!(substitute("Hiragino Sans GB"), Some("Noto Sans SC"));
+        assert_eq!(substitute("Microsoft YaHei"), Some("Noto Sans SC"));
+        assert_eq!(substitute("微软雅黑"), Some("Noto Sans SC"));
+        assert_eq!(substitute("SimSun"), Some("Noto Serif SC"));
+        assert_eq!(substitute("Yu Gothic"), Some("Noto Sans JP"));
+        assert_eq!(substitute("Malgun Gothic"), Some("Noto Sans KR"));
+        assert_eq!(substitute("DejaVu Sans Mono"), Some("JetBrains Mono"));
+        // The names Fontsource does serve stay untouched.
+        assert_eq!(substitute("Noto Sans SC"), None);
+        assert_eq!(substitute("Noto Sans"), None);
+        assert_eq!(substitute("DejaVu Sans"), None);
     }
 
     #[test]

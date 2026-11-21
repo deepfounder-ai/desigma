@@ -2,6 +2,13 @@ use crate::fontsource::{font_id, metadata_url, FontMeta};
 use crate::{bundled_for, FontError, FontRequest};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Attempts per URL. One retry covers a dropped connection or a CDN hiccup without
+/// making a real outage wait much longer.
+const FETCH_ATTEMPTS: usize = 2;
+/// How long to wait before the second attempt.
+const RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Source of bytes for a URL. The default implementation (feature `net`) is a
 /// blocking `ureq` client; tests inject their own.
@@ -17,8 +24,14 @@ struct UreqFetch {
 #[cfg(feature = "net")]
 impl UreqFetch {
     fn new() -> Self {
-        use std::time::Duration;
-        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).timeout(Duration::from_secs(60)).user_agent("desigma-fonts").build();
+        // `HTTPS_PROXY` and friends are honoured, so a machine behind a proxy (the common case
+        // where fonts.googleapis.com and the CDN are slow or blocked) can still download fonts.
+        let agent = ureq::AgentBuilder::new()
+            .try_proxy_from_env(true)
+            .timeout_connect(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .user_agent("desigma-fonts")
+            .build();
         Self { agent }
     }
 }
@@ -142,7 +155,7 @@ impl FontCache {
             return Ok(bytes);
         }
         let fetcher = self.fetcher.as_deref().ok_or_else(|| FontError::Offline(format!("'{}' is not cached and fetching is disabled", req.family)))?;
-        let meta_bytes = fetcher.get(&metadata_url(&req.family)).map_err(|e| match e {
+        let meta_bytes = self.get(fetcher, &metadata_url(&req.family)).map_err(|e| match e {
             FontError::NotFound(_) => FontError::NotFound(req.family.clone()),
             other => other,
         })?;
@@ -151,7 +164,7 @@ impl FontCache {
             return Err(FontError::NotOpenSource { family: meta.family, license: meta.license });
         }
         let pick = meta.pick(req.weight, req.italic)?;
-        let bytes = fetcher.get(&pick.url)?;
+        let bytes = self.get(fetcher, &pick.url)?;
         if bytes.len() < 12 || !matches!(&bytes[..4], [0, 1, 0, 0] | b"OTTO" | b"true" | b"ttcf") {
             return Err(FontError::Metadata(format!("{} is not a TTF/OTF file", pick.url)));
         }
@@ -168,6 +181,25 @@ impl FontCache {
             },
         )?;
         Ok(bytes)
+    }
+
+    /// One URL, retried once on a transient failure. A missing font or a disabled network is
+    /// final: repeating it only delays the "font unavailable" toast.
+    fn get(&self, fetcher: &dyn Fetch, url: &str) -> Result<Vec<u8>, FontError> {
+        let mut attempt = 1;
+        let mut wait = RETRY_BACKOFF;
+        loop {
+            match fetcher.get(url) {
+                Ok(bytes) => return Ok(bytes),
+                Err(e @ (FontError::NotFound(_) | FontError::Offline(_))) => return Err(e),
+                Err(e) if attempt >= FETCH_ATTEMPTS => return Err(e),
+                Err(_) => {
+                    std::thread::sleep(wait);
+                    wait *= 2;
+                    attempt += 1;
+                }
+            }
+        }
     }
 
     fn store(&self, req: &FontRequest, bytes: &[u8], side: &Sidecar) -> Result<(), FontError> {
@@ -304,5 +336,58 @@ mod tests {
     fn default_dir_is_under_desigma_fonts() {
         let d = FontCache::default_dir();
         assert!(d.ends_with(Path::new("desigma").join("fonts")));
+    }
+
+    /// Fails the first `fail_first` requests the way a dropped connection does, then serves.
+    struct Flaky {
+        routes: HashMap<String, Vec<u8>>,
+        hits: Arc<Mutex<Vec<String>>>,
+        fail_first: usize,
+        seen: Mutex<usize>,
+    }
+
+    impl Fetch for Flaky {
+        fn get(&self, url: &str) -> Result<Vec<u8>, FontError> {
+            self.hits.lock().unwrap().push(url.to_string());
+            let mut seen = self.seen.lock().unwrap();
+            if *seen < self.fail_first {
+                *seen += 1;
+                return Err(FontError::Network("timed out reading response".into()));
+            }
+            drop(seen);
+            self.routes.get(url).cloned().ok_or_else(|| FontError::NotFound(url.to_string()))
+        }
+    }
+
+    fn flaky_cache(dir: &Path, fail_first: usize, routes: HashMap<String, Vec<u8>>, hits: Arc<Mutex<Vec<String>>>) -> FontCache {
+        FontCache::with_dir(dir).with_fetcher(Box::new(Flaky { routes, hits, fail_first, seen: Mutex::new(0) }))
+    }
+
+    #[test]
+    fn a_transient_failure_is_retried_once() {
+        let dir = tempdir("retry");
+        let m = FontMeta::parse(CARLITO).unwrap();
+        let mut routes = HashMap::new();
+        routes.insert(metadata_url(&m.family), CARLITO.as_bytes().to_vec());
+        for subs in m.ttf.values().flat_map(|s| s.values()) {
+            for url in subs.values() {
+                routes.insert(url.clone(), fake_ttf());
+            }
+        }
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let cache = flaky_cache(&dir, 1, routes, hits.clone());
+
+        assert_eq!(cache.resolve(&FontRequest::new("Carlito", 400, false)).unwrap(), fake_ttf());
+        assert_eq!(hits.lock().unwrap().len(), 3); // failed attempt, then metadata + ttf
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_font_is_not_retried() {
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let cache = flaky_cache(&tempdir("no-retry-404"), 0, HashMap::new(), hits.clone());
+        let err = cache.resolve(&FontRequest::new("No Such Font", 400, false)).unwrap_err();
+        assert!(matches!(err, FontError::NotFound(_)), "{err:?}");
+        assert_eq!(hits.lock().unwrap().len(), 1);
     }
 }
