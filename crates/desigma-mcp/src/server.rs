@@ -7,6 +7,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::{Duration, Instant, SystemTime},
 };
 
 pub struct DesigmaServer {
@@ -21,6 +22,9 @@ pub struct Session {
     discovery: Option<PathBuf>,
     /// Latched on the first call so a vanished editor never turns into a silent file session.
     mode: Option<Mode>,
+    /// A failed probe and the bridge file signature it failed for. An unchanged stale
+    /// bridge file is not probed on every tool call; a rewritten file probes immediately.
+    probe_miss: Option<(SystemTime, u64, Instant)>,
     /// The `.desigma` file this session was opened from or last saved to, if any.
     path: Option<PathBuf>,
 }
@@ -55,6 +59,10 @@ struct NewArgs {
     discard_changes: bool,
 }
 
+fn bridge_signature(path: &Path) -> Option<(SystemTime, u64)> {
+    fs::metadata(path).ok().and_then(|meta| meta.modified().ok().map(|time| (time, meta.len())))
+}
+
 fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
     serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))
 }
@@ -72,7 +80,31 @@ impl Session {
         if !root.is_dir() {
             return Err(format!("Workspace {} must be a directory", root.display()));
         }
-        Ok(Self { engine: Engine::default(), root, dirty: false, discovery, mode: None, path: None })
+        Ok(Self { engine: Engine::default(), root, dirty: false, discovery, mode: None, probe_miss: None, path: None })
+    }
+
+    /// Probe the editor bridge, with a short negative cache for an unchanged stale
+    /// bridge file. Without it a dead editor costs a 300 ms ping on every tool call,
+    /// which turns a small batch into minutes of waiting.
+    fn probe_editor(&mut self) -> Option<crate::live::Editor> {
+        const RETRY_AFTER: Duration = Duration::from_secs(2);
+        let path = self.discovery.clone()?;
+        let signature = bridge_signature(&path);
+        if let Some((miss_signature, miss_len, at)) = self.probe_miss {
+            if at.elapsed() < RETRY_AFTER && Some((miss_signature, miss_len)) == signature {
+                return None;
+            }
+        }
+        match crate::live::probe_at(&path) {
+            Some(editor) => {
+                self.probe_miss = None;
+                Some(editor)
+            }
+            None => {
+                self.probe_miss = signature.map(|(time, len)| (time, len, Instant::now()));
+                None
+            }
+        }
     }
 
     /// Refusal shared by every path check: it names the path that was resolved
@@ -215,7 +247,8 @@ impl Session {
         if name == "desigma_import_svg" {
             args = self.inline_svg(args)?;
         }
-        match (self.mode, self.discovery.as_deref().and_then(crate::live::probe_at)) {
+        let editor = self.probe_editor();
+        match (self.mode, editor) {
             (Some(Mode::Editor), None) => {
                 return Err("Editor bridge is off; turn it on again (Preferences → Allow MCP agents to control this editor) or restart desigma-mcp".into())
             }

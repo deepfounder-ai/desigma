@@ -339,6 +339,17 @@ fn file_session_switches_to_a_late_editor_only_without_unsaved_edits() {
 }
 
 #[test]
+fn stale_discovery_file_keeps_a_file_session() {
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let file = write_discovery(port, "tok");
+    let dir = Workspace::new();
+    let mut s = Session::with_discovery(&dir.0, Some(file)).unwrap();
+    for _ in 0..5 {
+        assert_eq!(s.call("desigma_get_document", json!({})).unwrap()["session"], "file");
+    }
+}
+
+#[test]
 fn list_files_shows_library_designs_and_outside_copies() {
     let dir = Workspace::new();
     let lib = desigma_library::Library::open(&dir.0).unwrap();
