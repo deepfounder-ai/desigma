@@ -1,4 +1,5 @@
 #![cfg(feature = "server")]
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use desigma_mcp::server::Session;
 use serde_json::json;
 use std::{
@@ -336,6 +337,29 @@ fn file_session_switches_to_a_late_editor_only_without_unsaved_edits() {
     assert_eq!(dirty.call("desigma_get_document", json!({})).unwrap()["session"], "editor");
 
     let _ = fs::remove_file(&file);
+}
+
+#[test]
+fn image_import_reads_workspace_paths_and_inlines_bytes() {
+    const ONE_PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let dir = Workspace::new();
+    fs::write(dir.0.join("pixel.png"), STANDARD.decode(ONE_PIXEL_PNG).unwrap()).unwrap();
+    let mut s = Session::with_discovery(&dir.0, None).unwrap();
+    let page = s.call("desigma_get_document", json!({})).unwrap()["pages"][0]["node_id"].clone();
+    let imported = s.call("desigma_import_image", json!({"parent_id":page,"path":"pixel.png","width":10,"height":10})).unwrap();
+    assert_eq!(imported["changed"], true);
+    assert_eq!(s.engine.doc.images.len(), 1);
+    let node_id = imported["node_id"].clone();
+    let filled = s.call("desigma_set_image_fill", json!({"node_id":node_id,"path":"pixel.png"})).unwrap();
+    assert_eq!(filled["changed"], false, "the same image bytes are already the fill");
+    let outside_name = format!("desigma-image-outside-{}.png", unique_suffix());
+    let outside_path = dir.0.parent().unwrap().join(&outside_name);
+    fs::write(&outside_path, STANDARD.decode(ONE_PIXEL_PNG).unwrap()).unwrap();
+    let outside = s.call("desigma_import_image", json!({"parent_id":page,"path":format!("../{outside_name}")})).unwrap_err();
+    assert!(outside.contains("workspace"), "{outside}");
+    let inline = s.call("desigma_import_image", json!({"parent_id":page,"image":ONE_PIXEL_PNG})).unwrap_err();
+    assert!(inline.contains("path is required"), "{inline}");
+    let _ = fs::remove_file(outside_path);
 }
 
 #[test]

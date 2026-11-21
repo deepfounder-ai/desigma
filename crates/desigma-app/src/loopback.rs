@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-pub const MAX_BODY: usize = 2 * 1024 * 1024;
+pub const MAX_BODY: usize = 32 * 1024 * 1024;
 pub const MAX_HEADER: usize = 8192;
 pub type Failure = (&'static str, &'static str);
 
@@ -123,7 +123,7 @@ mod tests {
     fn rejects_malformed_oversized_and_unframed_requests() {
         assert_eq!(roundtrip("GET /x HTTP/1.0\r\n\r\n").unwrap_err().0, "400 Bad Request");
         assert_eq!(roundtrip("POST /x HTTP/1.1\r\nHost: x\r\n\r\n").unwrap_err().0, "411 Length Required");
-        assert_eq!(roundtrip("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 9999999\r\n\r\n").unwrap_err().0, "413 Payload Too Large");
+        assert_eq!(roundtrip(&format!("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n", MAX_BODY + 1)).unwrap_err().0, "413 Payload Too Large");
         assert_eq!(roundtrip("GET /x HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n").unwrap_err().0, "400 Bad Request");
         assert_eq!(roundtrip("GET /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap_err().0, "400 Bad Request");
     }
