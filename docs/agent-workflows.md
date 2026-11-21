@@ -63,8 +63,8 @@ does this project already have".
 
 Use `desigma_generate_code` when:
 
-- the layer is finished and the question is handoff — `css` and `tailwind` for the admin,
-  `compose` and `swiftui` for the clients, `svg` for icons;
+- the layer is finished and the question is handoff — `css`, `tailwind` and `vue` for the
+  admin, `compose`, `swiftui` and `flutter` for the clients, `svg` for icons;
 - you want a diffable second opinion on geometry, spacing and typography;
 - a human will read the output.
 

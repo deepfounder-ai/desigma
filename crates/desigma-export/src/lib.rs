@@ -4,7 +4,8 @@
 //!   growing the image to include shadows, blur and outside strokes like Figma.
 //! * [`export_svg`] writes real vector SVG (see [`SvgOptions`]).
 //! * [`css_for`] prints Dev Mode style CSS for a layer; [`tailwind_for`], [`swiftui_for`],
-//!   [`compose_for`] and [`react_for`] generate code for the other Dev Mode languages.
+//!   [`compose_for`], [`react_for`], [`flutter_for`] and [`vue_for`] generate code for the
+//!   other Dev Mode languages.
 //!
 //! [`export_pdf`] exports ordered slide frames as losslessly compressed raster PDF pages.
 //! PDF pages preserve slide dimensions and artwork; text is not selectable.
@@ -15,6 +16,7 @@ mod codegen;
 mod compose;
 mod css;
 mod css_anim;
+mod flutter;
 mod geo;
 mod pdf;
 mod raster;
@@ -24,6 +26,7 @@ mod swiftui;
 mod tailwind;
 mod text;
 mod util;
+mod vue;
 
 pub use bounds::render_bounds;
 pub use codegen::css_var as css_variable_reference;
@@ -31,6 +34,7 @@ pub use codegen::{is_vector_asset, vector_assets};
 pub use compose::compose_for;
 pub use css::{css_for, font_family_css, paint_css, text_style_css};
 pub use css_anim::{compose_animation_for, css_animation_for, swiftui_animation_for};
+pub use flutter::flutter_for;
 pub use pdf::export_pdf;
 pub use raster::{export_jpg, export_png, render_export, render_size, rgba_bytes, ExportScale};
 pub use react::{react_for, react_with, ReactOptions};
@@ -39,6 +43,7 @@ pub use swiftui::swiftui_for;
 pub use tailwind::tailwind_for;
 pub use text::register_font;
 pub use util::css_color;
+pub use vue::vue_for;
 
 /// Output file format of an export setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

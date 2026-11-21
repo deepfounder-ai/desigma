@@ -50,6 +50,8 @@ fn keywords(lang: Language) -> &'static [&'static str] {
         Language::SwiftUi => &["let", "var", "func", "struct", "some", "return", "if", "else", "true", "false", "nil", "import", "self", "in"],
         Language::Compose => &["val", "var", "fun", "return", "if", "else", "true", "false", "null", "import", "class", "object"],
         Language::React => &["export", "function", "return", "const", "true", "false", "null", "import"],
+        Language::Flutter => &["class", "extends", "return", "const", "final", "Widget", "build", "true", "false", "null"],
+        Language::Vue => &["template", "script", "setup", "style", "scoped", "true", "false", "null"],
     }
 }
 

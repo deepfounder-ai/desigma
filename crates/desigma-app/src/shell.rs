@@ -185,6 +185,8 @@ impl Shell {
                 "swiftui" => crate::dev::Language::SwiftUi,
                 "compose" => crate::dev::Language::Compose,
                 "react" => crate::dev::Language::React,
+                "flutter" => crate::dev::Language::Flutter,
+                "vue" => crate::dev::Language::Vue,
                 _ => crate::dev::Language::Css,
             };
             if opts.dev_demo {
