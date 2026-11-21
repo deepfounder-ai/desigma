@@ -1,5 +1,6 @@
 //! Workspace-scoped file session exposed over the official MCP SDK.
 use crate::engine::Engine;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rmcp::{model::*, service::RequestContext, ErrorData, RoleServer, ServerHandler};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -166,6 +167,37 @@ impl Session {
         Ok(args)
     }
 
+    /// Read a workspace image and inline it as base64, so the editor bridge receives bytes
+    /// rather than trying to read this machine's paths.
+    fn inline_image(&self, mut args: Value, name_from_path: bool) -> Result<Value, String> {
+        let Some(obj) = args.as_object_mut() else { return Ok(args) };
+        if obj.contains_key("image") {
+            if obj.contains_key("path") {
+                return Err("pass either path or image, not both".into());
+            }
+            return Ok(args);
+        }
+        let Some(path) = obj.remove("path") else { return Err("path is required".into()) };
+        let path = path.as_str().ok_or("path must be a string")?;
+        let file = self.input_path(path)?;
+        let extension = file.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+        if !matches!(extension.as_deref(), Some("png" | "jpg" | "jpeg" | "webp")) {
+            return Err("image path must end in .png, .jpg, .jpeg, or .webp".into());
+        }
+        let meta = fs::metadata(&file).map_err(|e| format!("Cannot read image: {e}"))?;
+        if meta.len() > 16 * 1024 * 1024 {
+            return Err("Input image exceeds the 16 MiB limit".into());
+        }
+        let bytes = fs::read(&file).map_err(|e| format!("Cannot read image: {e}"))?;
+        obj.insert("image".into(), json!(STANDARD.encode(bytes)));
+        if name_from_path && !obj.contains_key("name") {
+            if let Some(stem) = file.file_stem().and_then(|s| s.to_str()) {
+                obj.insert("name".into(), json!(stem));
+            }
+        }
+        Ok(args)
+    }
+
     /// Designs an assistant can open with `desigma_open_file`: library files (whatever folder
     /// they were imported from) and readable copies of files opened from outside the library.
     fn list_files(&self) -> Result<Value, String> {
@@ -214,6 +246,12 @@ impl Session {
         }
         if name == "desigma_import_svg" {
             args = self.inline_svg(args)?;
+        }
+        if name == "desigma_import_image" {
+            args = self.inline_image(args, true)?;
+        }
+        if name == "desigma_set_image_fill" {
+            args = self.inline_image(args, false)?;
         }
         match (self.mode, self.discovery.as_deref().and_then(crate::live::probe_at)) {
             (Some(Mode::Editor), None) => {

@@ -95,6 +95,8 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_generate_code` | Return CSS, Tailwind, React, SwiftUI, Compose, or SVG source without writing a file. |
 | `desigma_create_node` | Add a frame, rectangle, ellipse, or text layer to a container. |
 | `desigma_duplicate_node` | Copy a non-page layer and its subtree in place, after the source. New IDs; optional parent-space `offset` (10 by default, 0 in auto layout). Refuses page roots and layers inside an instance. |
+| `desigma_import_image` | Import a workspace PNG/JPEG/WebP as a rectangle with an embedded image fill; content-hash dedupe and natural-size default. |
+| `desigma_set_image_fill` | Replace one paint on a non-text layer with an embedded image fill; optional paint index and scale mode. |
 | `desigma_update_node` | Change name, position, dimensions, visibility, opacity, or plain text. |
 | `desigma_batch` | Apply 1–100 node edits as one undo step. Later operations reference node IDs from earlier ones with `$INDEX` in `node_id`, `parent_id`, or `node_ids`. |
 | `desigma_set_auto_layout` | Create, update, or remove auto layout on a frame, component, or instance. |
