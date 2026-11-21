@@ -6,7 +6,7 @@
 ## 适用场景
 
 - 需要**改设计稿本身**（图层的名称、位置、颜色、文字、结构），而不是只读一份导出。
-- 需要从设计稿产出**交接代码**（CSS / Tailwind / Compose / SwiftUI / SVG）。
+- 需要从设计稿产出**交接代码**（CSS / Tailwind / Vue / Compose / SwiftUI / Flutter / SVG）。
 - 需要把设计稿批量规范化：命名、组件化、实例化、页面整理。
 - 不适合：纯前端实现细节、动效调优（除非用 `desigma_export_animation` 验证）。
 
@@ -47,7 +47,7 @@ desigma_save_file         → 结束前必须存
 ## 工具选择：`generate_code` 还是自己读节点树
 
 - **用 `generate_code`**：图层已完成，要交接；要一份可 diff 的几何/排版参考；产物给人看。
-  - `css` / `tailwind` 给后台；`compose` / `swiftui` 给客户端；`svg` 给图标。
+  - `css` / `tailwind` / `vue` 给后台；`compose` / `swiftui` / `flutter` 给客户端；`svg` 给图标。
 - **自己读节点树写代码**：
   - 目标代码里**已有组件**，图层要映射成组件 + props（`Button / Primary` 是 `PrimaryButton(size: md)`，不是一堆 `Container`）；
   - 跨度超过一个图层（整屏）；

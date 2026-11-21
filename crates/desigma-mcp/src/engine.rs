@@ -248,8 +248,10 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
                 "react" => desigma_export::react_for(&doc, id),
                 "swiftui" => desigma_export::swiftui_for(&doc, id),
                 "compose" => desigma_export::compose_for(&doc, id),
+                "flutter" => desigma_export::flutter_for(&doc, id),
+                "vue" => desigma_export::vue_for(&doc, id),
                 "svg" => desigma_export::export_svg(&doc, id, &Default::default()),
-                _ => return Err("language must be css, tailwind, react, swiftui, compose, or svg".into()),
+                _ => return Err("language must be css, tailwind, react, swiftui, compose, flutter, vue, or svg".into()),
             };
             Ok(json!({"node_id":id,"language":a.language,"code":code}))
         }
@@ -1856,7 +1858,7 @@ pub fn tools() -> Vec<Value> {
     add(
         "generate_code",
         "Generate developer handoff code or SVG for a layer using resolved variable values. Returns source text; writes no files.",
-        json!({"node_id":id,"language":{"type":"string","enum":["css","tailwind","react","swiftui","compose","svg"]}}),
+        json!({"node_id":id,"language":{"type":"string","enum":["css","tailwind","react","swiftui","compose","flutter","vue","svg"]}}),
         vec!["node_id", "language"],
         true,
         true,
@@ -2594,7 +2596,7 @@ mod tests {
         assert_eq!(result["total"], 2);
         assert_eq!(result["nodes"][0]["node_id"], id);
         assert_eq!(result["next_offset"], 1);
-        for language in ["css", "tailwind", "react", "swiftui", "compose", "svg"] {
+        for language in ["css", "tailwind", "react", "swiftui", "compose", "flutter", "vue", "svg"] {
             let output = e.call("desigma_generate_code", json!({"node_id":id,"language":language})).unwrap();
             assert!(!output["code"].as_str().unwrap().is_empty());
         }
