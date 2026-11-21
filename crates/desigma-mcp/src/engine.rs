@@ -1,11 +1,13 @@
 //! Typed, local document operations shared by the MCP transport and future bridges.
+use base64::Engine as _;
 use desigma_doc::{
-    AutoLayout, Color, Command, Document, Effect, History, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind, Paint, Rect, Sizing, Style,
-    StyleMeta, StyleProperty, TextAlignH, TextAlignV, TextAutoResize, TextStyle, VariableKind, VariableStore, VariableValue, Vec2,
+    AutoLayout, Color, Command, Document, Effect, History, ImageScaleMode, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind, Paint, PaintKind,
+    Rect, Sizing, Style, StyleMeta, StyleProperty, TextAlignH, TextAlignV, TextAutoResize, TextStyle, VariableKind, VariableStore, VariableValue, Vec2,
 };
 use desigma_svg::ImportOptions;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 pub struct Engine {
     pub doc: Document,
@@ -149,6 +151,8 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_move_node",
     "desigma_set_appearance",
     "desigma_set_effects",
+    "desigma_import_image",
+    "desigma_set_image_fill",
     "desigma_set_text_style",
     "desigma_create_style",
     "desigma_apply_style",
@@ -296,6 +300,8 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             set_appearance(host, a)
         }
         "desigma_set_effects" => set_effects(host, parse(args)?),
+        "desigma_import_image" => import_image(host, parse(args)?),
+        "desigma_set_image_fill" => set_image_fill(host, parse(args)?),
         "desigma_set_text_style" => {
             let a: TextStyleArgs = parse(args)?;
             set_text_style(host, a)
@@ -1706,6 +1712,115 @@ fn set_effects<H: Host>(host: &mut H, a: SetEffectsArgs) -> Result<Value, String
     Ok(json!({"node_id":a.node_id,"effects":effects,"changed":changed}))
 }
 
+fn image_scale_mode(value: Option<&str>) -> Result<ImageScaleMode, String> {
+    match value.unwrap_or("fill") {
+        "fill" => Ok(ImageScaleMode::Fill),
+        "fit" => Ok(ImageScaleMode::Fit),
+        "crop" => Ok(ImageScaleMode::Crop),
+        "tile" => Ok(ImageScaleMode::Tile),
+        other => Err(format!("scale_mode must be fill, fit, crop, or tile, got {other}")),
+    }
+}
+
+/// Validate, normalize and hash an image received as base64. WebP is stored as PNG.
+fn decode_image(spec: &str) -> Result<(Vec<u8>, u32, u32, String), String> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(spec.trim()).map_err(|_| "image must be valid base64".to_string())?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("image exceeds the 16 MiB limit".into());
+    }
+    let format = image::guess_format(&bytes).map_err(|_| "unsupported image (use PNG, JPEG or WebP)".to_string())?;
+    if !matches!(format, image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP) {
+        return Err("unsupported image (use PNG, JPEG or WebP)".into());
+    }
+    let decoded = image::load_from_memory_with_format(&bytes, format).map_err(|e| format!("cannot decode image: {e}"))?;
+    let (width, height) = (decoded.width(), decoded.height());
+    if u64::from(width) * u64::from(height) > 40_000_000 {
+        return Err("image exceeds the 40 megapixel limit".into());
+    }
+    let bytes = if format == image::ImageFormat::WebP {
+        let mut out = std::io::Cursor::new(Vec::new());
+        decoded.write_to(&mut out, image::ImageFormat::Png).map_err(|e| format!("cannot convert WebP: {e}"))?;
+        out.into_inner()
+    } else {
+        bytes
+    };
+    let digest = Sha256::digest(&bytes);
+    let hash: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    Ok((bytes, width, height, format!("img-{hash}")))
+}
+
+fn insert_image_asset<H: Host>(host: &mut H, bytes: Vec<u8>, key: &str) -> Result<bool, String> {
+    if host.doc().images.contains_key(key) {
+        return Ok(false);
+    }
+    host.doc_mut().images.insert(key.to_string(), bytes);
+    Ok(true)
+}
+
+fn import_image<H: Host>(host: &mut H, a: ImportImageArgs) -> Result<Value, String> {
+    let parent = node(host, a.parent_id)?;
+    if !parent.kind.is_container() {
+        return Err("parent_id must identify a container".into());
+    }
+    let (bytes, iw, ih, image_ref) = decode_image(&a.image)?;
+    let (iw, ih) = (iw as f32, ih as f32);
+    let (width, height) = match (a.width, a.height) {
+        (Some(w), Some(h)) => (w, h),
+        (Some(w), None) => (w, w * ih / iw),
+        (None, Some(h)) => (iw * h / ih, h),
+        (None, None) => {
+            let scale = (400.0 / iw.max(ih)).min(1.0);
+            (iw * scale, ih * scale)
+        }
+    };
+    geometry(a.x, a.y, width, height)?;
+    if width <= 0.0 || height <= 0.0 {
+        return Err("image width and height must be positive".into());
+    }
+    let name = a.name.unwrap_or_else(|| "Image".into());
+    bounded_text("name", &name, 1024)?;
+    let id = host.alloc_id()?;
+    let inserted = insert_image_asset(host, bytes, &image_ref)?;
+    let mut node = Node::rectangle(id, Rect::new(a.x, a.y, width, height));
+    node.name = name.clone();
+    node.fills = vec![Paint { kind: PaintKind::Image { image_ref: image_ref.clone(), scale_mode: ImageScaleMode::Fill }, ..Paint::solid(Color::WHITE) }];
+    let index = host.doc().get(NodeId(a.parent_id)).map(|p| p.children.len()).unwrap_or(0);
+    if let Err(e) = host.exec(Command::Insert { parent: NodeId(a.parent_id), index, nodes: vec![node] }) {
+        if inserted {
+            host.doc_mut().images.remove(&image_ref);
+        }
+        return Err(e);
+    }
+    Ok(json!({"node_id":id,"name":name,"width":width,"height":height,"image_ref":image_ref,"changed":true}))
+}
+
+fn set_image_fill<H: Host>(host: &mut H, a: SetImageFillArgs) -> Result<Value, String> {
+    let mut node = node(host, a.node_id)?.clone();
+    if node.parent.is_none() {
+        return Err("page roots cannot be edited by this tool".into());
+    }
+    if matches!(node.kind, NodeKind::Text(_)) {
+        return Err("image fills are not supported on text layers".into());
+    }
+    if a.paint_index >= node.fills.len() {
+        return Err(format!("paint_index {} is out of range for {} fills", a.paint_index, node.fills.len()));
+    }
+    let scale_mode = image_scale_mode(a.scale_mode.as_deref())?;
+    let (bytes, _, _, image_ref) = decode_image(&a.image)?;
+    let inserted = insert_image_asset(host, bytes, &image_ref)?;
+    node.fills[a.paint_index].kind = PaintKind::Image { image_ref: image_ref.clone(), scale_mode };
+    let changed = host.doc().get(NodeId(a.node_id)) != Some(&node);
+    if changed {
+        if let Err(e) = host.exec(Command::Update { node: Box::new(node) }) {
+            if inserted {
+                host.doc_mut().images.remove(&image_ref);
+            }
+            return Err(e);
+        }
+    }
+    Ok(json!({"node_id":a.node_id,"image_ref":image_ref,"paint_index":a.paint_index,"changed":changed}))
+}
+
 fn colour(spec: &str, field: &str) -> Result<Color, String> {
     Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid {field} colour: {spec} (use #RGB, #RRGGBB, #RRGGBBAA or none)"))
 }
@@ -1905,6 +2020,33 @@ struct CreatePageArgs {
 struct SetEffectsArgs {
     node_id: u64,
     effects: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportImageArgs {
+    parent_id: u64,
+    name: Option<String>,
+    #[serde(default)]
+    x: f32,
+    #[serde(default)]
+    y: f32,
+    width: Option<f32>,
+    height: Option<f32>,
+    /// Base64 bytes; the MCP server replaces a workspace `path` with this field.
+    image: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetImageFillArgs {
+    node_id: u64,
+    /// Base64 bytes; the MCP server replaces a workspace `path` with this field.
+    image: String,
+    #[serde(default)]
+    paint_index: usize,
+    /// fill | fit | crop | tile
+    scale_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2292,6 +2434,22 @@ pub fn tools() -> Vec<Value> {
         &set_effects_description,
         json!({"node_id":id,"effects":{"type":"array","maxItems":100,"items":{"type":"object","additionalProperties":true,"properties":{"type":{"type":"string","enum":EFFECT_TYPES},"color":{"type":"string","maxLength":9},"offset":{"type":["object","array"]},"radius":{"type":"number","minimum":0,"maximum":1000000},"spread":{"type":"number","minimum":-1000000,"maximum":1000000},"visible":{"type":"boolean"},"show_behind":{"type":"boolean"}},"required":["type"]}}}),
         vec!["node_id", "effects"],
+        false,
+        true,
+    );
+    add(
+        "import_image",
+        "Import a workspace PNG, JPEG, or WebP file (up to 16 MiB and 40 megapixels) as a rectangle filled with the image. WebP is stored as PNG. The image is embedded by content hash; importing identical bytes reuses the asset. If width/height are omitted, the natural size is capped at 400 px; one supplied side preserves the aspect ratio. Supports undo for the layer insert; asset bytes sit outside undo.",
+        json!({"parent_id":id,"path":{"type":"string","description":"Workspace-relative .png, .jpg, .jpeg, or .webp file."},"name":name,"x":coordinate,"y":coordinate,"width":size,"height":size}),
+        vec!["parent_id", "path"],
+        false,
+        false,
+    );
+    add(
+        "set_image_fill",
+        "Replace one paint on a non-text layer with an image fill from a workspace PNG, JPEG, or WebP file. paint_index defaults to 0 and must exist. scale_mode is fill, fit, crop, or tile (default fill). The image is embedded by content hash. Supports undo for the paint update; asset bytes sit outside undo.",
+        json!({"node_id":id,"path":{"type":"string","description":"Workspace-relative .png, .jpg, .jpeg, or .webp file."},"paint_index":{"type":"integer","minimum":0},"scale_mode":{"type":"string","enum":["fill","fit","crop","tile"]}}),
+        vec!["node_id", "path"],
         false,
         true,
     );
@@ -2972,6 +3130,82 @@ mod tests {
             .unwrap()
             .iter()
             .any(|v| v == "desigma_create_node"));
+    }
+
+    const ONE_PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn image_import_creates_a_filled_rectangle_and_dedupes_assets() {
+        let mut e = Engine::default();
+        let first = e.call("desigma_import_image", json!({"parent_id":1,"name":"Photo","image":ONE_PIXEL_PNG,"width":120,"height":80})).unwrap();
+        let first_id = first["node_id"].as_u64().unwrap();
+        let image_ref = first["image_ref"].as_str().unwrap().to_string();
+        assert_eq!(e.doc.images.len(), 1);
+        let node = e.doc.get(NodeId(first_id)).unwrap();
+        assert_eq!(node.name, "Photo");
+        assert_eq!((node.size.x, node.size.y), (120.0, 80.0));
+        assert!(matches!(&node.fills[0].kind, desigma_doc::PaintKind::Image { image_ref: r, .. } if r == &image_ref));
+
+        let second = e.call("desigma_import_image", json!({"parent_id":1,"name":"Copy","image":ONE_PIXEL_PNG})).unwrap();
+        let second_id = second["node_id"].as_u64().unwrap();
+        assert_eq!(second["image_ref"], image_ref);
+        assert_eq!(e.doc.images.len(), 1, "the same bytes reuse the content key");
+        e.call("desigma_undo", json!({})).unwrap();
+        assert!(e.doc.get(NodeId(second_id)).is_none());
+        assert_eq!(e.doc.images.len(), 1, "asset bytes sit outside undo");
+    }
+
+    #[test]
+    fn image_fill_replaces_the_requested_paint_and_undoes() {
+        let mut e = Engine::default();
+        let rect = create(&mut e, "rectangle", "Card");
+        let result = e.call("desigma_set_image_fill", json!({"node_id":rect,"image":ONE_PIXEL_PNG,"paint_index":0})).unwrap();
+        let image_ref = result["image_ref"].as_str().unwrap().to_string();
+        let node = e.doc.get(NodeId(rect)).unwrap();
+        assert!(
+            matches!(&node.fills[0].kind, desigma_doc::PaintKind::Image { image_ref: r, scale_mode: desigma_doc::ImageScaleMode::Fill } if r == &image_ref)
+        );
+        e.call("desigma_undo", json!({})).unwrap();
+        assert!(matches!(e.doc.get(NodeId(rect)).unwrap().fills[0].kind, desigma_doc::PaintKind::Solid(_)));
+        e.call("desigma_redo", json!({})).unwrap();
+        assert!(matches!(e.doc.get(NodeId(rect)).unwrap().fills[0].kind, desigma_doc::PaintKind::Image { .. }));
+
+        let text = create(&mut e, "text", "Label");
+        let err = e.call("desigma_set_image_fill", json!({"node_id":text,"image":ONE_PIXEL_PNG})).unwrap_err();
+        assert!(err.contains("text"), "{err}");
+    }
+
+    #[test]
+    fn image_tools_reject_invalid_input_atomically() {
+        let mut e = Engine::default();
+        let rect = create(&mut e, "rectangle", "Card");
+        let before = e.doc.to_json().unwrap();
+        for (name, args) in [
+            ("desigma_import_image", json!({"parent_id":1,"image":"not-base64"})),
+            ("desigma_import_image", json!({"parent_id":1,"image":"aGVsbG8="})),
+            ("desigma_import_image", json!({"parent_id":9999,"image":ONE_PIXEL_PNG})),
+            ("desigma_set_image_fill", json!({"node_id":1,"image":ONE_PIXEL_PNG})),
+            ("desigma_set_image_fill", json!({"node_id":9999,"image":ONE_PIXEL_PNG})),
+            ("desigma_set_image_fill", json!({"node_id":rect,"image":"not-base64"})),
+            ("desigma_set_image_fill", json!({"node_id":rect,"image":ONE_PIXEL_PNG,"paint_index":5})),
+            ("desigma_set_image_fill", json!({"node_id":rect,"image":ONE_PIXEL_PNG,"scale_mode":"stretch"})),
+        ] {
+            let err = e.call(name, args).unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+            assert_eq!(e.doc.to_json().unwrap(), before, "{name} changed the document");
+            assert!(e.doc.images.is_empty(), "{name} left asset bytes behind");
+        }
+    }
+
+    #[test]
+    fn image_tools_are_registered_as_writing_tools() {
+        for name in ["desigma_import_image", "desigma_set_image_fill"] {
+            let t = tools().into_iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("missing {name}"));
+            assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
+            assert_eq!(t["inputSchema"]["additionalProperties"], false, "{name}");
+        }
+        let import = tools().into_iter().find(|t| t["name"] == "desigma_import_image").unwrap();
+        assert_eq!(import["inputSchema"]["required"], json!(["parent_id", "path"]));
     }
 
     #[test]
