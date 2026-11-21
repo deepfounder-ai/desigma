@@ -361,16 +361,35 @@ mod tests {
         .unwrap()
         .unwrap();
         let d = read_discovery(&dir).unwrap();
-        let ask = |line: &str| {
+        // The server stops reading at MAX_LINE and closes; on Windows that can reset a client
+        // still writing the oversized line. Keep the I/O result so the test can accept a reset
+        // as the same refusal the server sent before closing.
+        let ask = |line: &str| -> std::io::Result<String> {
             let mut s = TcpStream::connect(("127.0.0.1", d.port)).unwrap();
-            s.write_all(line.as_bytes()).unwrap();
+            s.write_all(line.as_bytes())?;
             let mut r = String::new();
-            BufReader::new(s).read_line(&mut r).unwrap();
-            r
+            BufReader::new(s).read_line(&mut r)?;
+            Ok(r)
         };
-        assert_eq!(ask("wrong open-link desigma://join/abc\n"), "err bad token\n");
-        assert_eq!(ask("\n"), "err bad request\n");
-        assert!(ask(&format!("{} open-link desigma://join/{}\n", d.token, "a".repeat(MAX_LINE))).starts_with("err"));
+        let reset = |err: &std::io::Error| {
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            )
+        };
+        assert_eq!(ask("wrong open-link desigma://join/abc\n").unwrap(), "err bad token\n");
+        assert_eq!(ask("\n").unwrap(), "err bad request\n");
+        let oversized = ask(&format!("{} open-link desigma://join/{}\n", d.token, "a".repeat(MAX_LINE)));
+        assert!(
+            match oversized {
+                Ok(reply) => reply.starts_with("err") || reply.is_empty(),
+                Err(err) => reset(&err),
+            },
+            "the oversized line must not open a link"
+        );
         assert!(rx.try_recv().is_err());
     }
 
