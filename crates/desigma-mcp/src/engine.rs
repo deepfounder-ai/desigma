@@ -1,7 +1,7 @@
 //! Typed, local document operations shared by the MCP transport and future bridges.
 use desigma_doc::{
-    AutoLayout, Color, Command, Document, History, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind, Paint, Rect, Sizing, TextAlignH,
-    TextAlignV, TextAutoResize, TextStyle, VariableKind, VariableStore, VariableValue,
+    AutoLayout, Color, Command, Document, Effect, History, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind, Paint, Rect, Sizing, TextAlignH,
+    TextAlignV, TextAutoResize, TextStyle, VariableKind, VariableStore, VariableValue, Vec2,
 };
 use desigma_svg::ImportOptions;
 use serde::{de::DeserializeOwned, Deserialize};
@@ -128,6 +128,7 @@ pub const BATCHABLE: &[&str] = &[
     "desigma_update_node",
     "desigma_move_node",
     "desigma_set_appearance",
+    "desigma_set_effects",
     "desigma_set_text_style",
     "desigma_set_auto_layout",
     "desigma_set_layout_child",
@@ -144,6 +145,7 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_update_node",
     "desigma_move_node",
     "desigma_set_appearance",
+    "desigma_set_effects",
     "desigma_set_text_style",
     "desigma_set_auto_layout",
     "desigma_set_layout_child",
@@ -285,6 +287,7 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             let a: AppearanceArgs = parse(args)?;
             set_appearance(host, a)
         }
+        "desigma_set_effects" => set_effects(host, parse(args)?),
         "desigma_set_text_style" => {
             let a: TextStyleArgs = parse(args)?;
             set_text_style(host, a)
@@ -1366,6 +1369,126 @@ fn batch<H: Host>(host: &mut H, a: BatchArgs) -> Result<Value, String> {
     Ok(json!({"changed":changed,"operations":a.operations.len(),"results":summaries}))
 }
 
+fn reject_effect_keys(obj: &serde_json::Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
+    for key in obj.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!("unknown effect field '{key}'"));
+        }
+    }
+    Ok(())
+}
+
+fn effect_bool(obj: &serde_json::Map<String, Value>, key: &str, default: bool) -> Result<bool, String> {
+    match obj.get(key) {
+        None => Ok(default),
+        Some(value) => value.as_bool().ok_or_else(|| format!("{key} must be a boolean")),
+    }
+}
+
+fn effect_number(obj: &serde_json::Map<String, Value>, key: &str) -> Result<f32, String> {
+    let value = obj.get(key).ok_or_else(|| format!("{key} is required"))?;
+    let number = value.as_f64().ok_or_else(|| format!("{key} must be a number"))?;
+    if !number.is_finite() || number.abs() > 1_000_000.0 {
+        return Err(format!("{key} must be finite and within ±1000000"));
+    }
+    Ok(number as f32)
+}
+
+fn effect_radius(obj: &serde_json::Map<String, Value>) -> Result<f32, String> {
+    let radius = effect_number(obj, "radius")?;
+    if radius < 0.0 {
+        return Err("radius must be non-negative".into());
+    }
+    Ok(radius)
+}
+
+fn effect_offset(obj: &serde_json::Map<String, Value>) -> Result<Vec2, String> {
+    let offset = obj.get("offset").ok_or("offset is required")?;
+    if let Some(v) = offset.as_object() {
+        let x = v.get("x").and_then(Value::as_f64).ok_or("offset.x must be a number")?;
+        let y = v.get("y").and_then(Value::as_f64).ok_or("offset.y must be a number")?;
+        if !x.is_finite() || !y.is_finite() || x.abs() > 1_000_000.0 || y.abs() > 1_000_000.0 {
+            return Err("offset must be finite and within ±1000000".into());
+        }
+        return Ok(Vec2::new(x as f32, y as f32));
+    }
+    if let Some(v) = offset.as_array() {
+        if v.len() != 2 {
+            return Err("offset array must be [x, y]".into());
+        }
+        let x = v[0].as_f64().ok_or("offset[0] must be a number")?;
+        let y = v[1].as_f64().ok_or("offset[1] must be a number")?;
+        if !x.is_finite() || !y.is_finite() || x.abs() > 1_000_000.0 || y.abs() > 1_000_000.0 {
+            return Err("offset must be finite and within ±1000000".into());
+        }
+        return Ok(Vec2::new(x as f32, y as f32));
+    }
+    Err("offset must be {x,y} or [x,y]".into())
+}
+
+fn effect_color(obj: &serde_json::Map<String, Value>) -> Result<Color, String> {
+    let spec = obj.get("color").and_then(Value::as_str).ok_or("color is required")?;
+    Color::from_hex(spec).ok_or_else(|| format!("invalid effect color '{spec}' (use #RGB, #RRGGBB or #RRGGBBAA)"))
+}
+
+fn parse_effect(value: &Value) -> Result<Effect, String> {
+    let obj = value.as_object().ok_or("each effect must be an object")?;
+    let kind = obj.get("type").and_then(Value::as_str).ok_or("effect type is required")?;
+    let visible = effect_bool(obj, "visible", true)?;
+    match kind {
+        "drop_shadow" => {
+            reject_effect_keys(obj, &["type", "color", "offset", "radius", "spread", "visible", "show_behind"])?;
+            let spread = match obj.get("spread") {
+                Some(_) => effect_number(obj, "spread")?,
+                None => 0.0,
+            };
+            Ok(Effect::DropShadow {
+                color: effect_color(obj)?,
+                offset: effect_offset(obj)?,
+                radius: effect_radius(obj)?,
+                spread,
+                visible,
+                show_behind: effect_bool(obj, "show_behind", false)?,
+            })
+        }
+        "inner_shadow" => {
+            reject_effect_keys(obj, &["type", "color", "offset", "radius", "spread", "visible"])?;
+            let spread = match obj.get("spread") {
+                Some(_) => effect_number(obj, "spread")?,
+                None => 0.0,
+            };
+            Ok(Effect::InnerShadow { color: effect_color(obj)?, offset: effect_offset(obj)?, radius: effect_radius(obj)?, spread, visible })
+        }
+        "layer_blur" => {
+            reject_effect_keys(obj, &["type", "radius", "visible"])?;
+            Ok(Effect::LayerBlur { radius: effect_radius(obj)?, visible })
+        }
+        "background_blur" => {
+            reject_effect_keys(obj, &["type", "radius", "visible"])?;
+            Ok(Effect::BackgroundBlur { radius: effect_radius(obj)?, visible })
+        }
+        other => Err(format!("effect type must be drop_shadow, inner_shadow, layer_blur, or background_blur, got {other}")),
+    }
+}
+
+fn set_effects<H: Host>(host: &mut H, a: SetEffectsArgs) -> Result<Value, String> {
+    let mut node = node(host, a.node_id)?.clone();
+    if node.parent.is_none() {
+        return Err("page roots cannot be edited by this tool".into());
+    }
+    if a.effects.len() > 100 {
+        return Err("effects accepts at most 100 entries".into());
+    }
+    let effects = a.effects.iter().map(parse_effect).collect::<Result<Vec<_>, _>>()?;
+    node.effects = effects;
+    let changed = host.doc().get(NodeId(a.node_id)) != Some(&node);
+    if changed {
+        host.exec(Command::Update { node: Box::new(node) })?;
+    }
+    let effects = host.doc().get(NodeId(a.node_id)).map(|n| n.effects.clone()).unwrap_or_default();
+    Ok(json!({"node_id":a.node_id,"effects":effects,"changed":changed}))
+}
+
 fn colour(spec: &str, field: &str) -> Result<Color, String> {
     Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid {field} colour: {spec} (use #RGB, #RRGGBB, #RRGGBBAA or none)"))
 }
@@ -1558,6 +1681,13 @@ struct CreatePageArgs {
     name: String,
     /// Page background; `#RRGGBB` (defaults to white).
     background: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetEffectsArgs {
+    node_id: u64,
+    effects: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -1873,8 +2003,8 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "batch",
-        "Apply 1-100 node edits as one undo step. Each operation is {tool, arguments}; allowed tools are create_node, duplicate_node, update_node, move_node, set_appearance, set_text_style, set_auto_layout, set_layout_child, and delete_node. A later operation can reference a node id returned by an earlier operation with \"$INDEX\" in node_id, parent_id, or entries of node_ids. Validation runs on a scratch document; a failed operation leaves the document and history unchanged.",
-        json!({"operations":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"tool":{"type":"string","enum":["desigma_create_node","desigma_duplicate_node","desigma_update_node","desigma_move_node","desigma_set_appearance","desigma_set_text_style","desigma_set_auto_layout","desigma_set_layout_child","desigma_delete_node"]},"arguments":{"type":"object","additionalProperties":true}},"required":["tool"],"additionalProperties":false}}}),
+        "Apply 1-100 node edits as one undo step. Each operation is {tool, arguments}; allowed tools are create_node, duplicate_node, update_node, move_node, set_appearance, set_effects, set_text_style, set_auto_layout, set_layout_child, and delete_node. A later operation can reference a node id returned by an earlier operation with \"$INDEX\" in node_id, parent_id, or entries of node_ids. Validation runs on a scratch document; a failed operation leaves the document and history unchanged.",
+        json!({"operations":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"tool":{"type":"string","enum":["desigma_create_node","desigma_duplicate_node","desigma_update_node","desigma_move_node","desigma_set_appearance","desigma_set_effects","desigma_set_text_style","desigma_set_auto_layout","desigma_set_layout_child","desigma_delete_node"]},"arguments":{"type":"object","additionalProperties":true}},"required":["tool"],"additionalProperties":false}}}),
         vec!["operations"],
         false,
         false,
@@ -1903,6 +2033,14 @@ pub fn tools() -> Vec<Value> {
         "Restyle one non-page layer: fill, stroke, stroke width, corner radius, opacity. Colours accept #RGB, #RRGGBB, #RRGGBBAA or none. On text layers fill sets the text colour. Supports undo; changes remain in memory until saved.",
         json!({"node_id":id,"fill":{"type":"string","maxLength":9},"stroke":{"type":"string","maxLength":9},"stroke_width":{"type":"number","minimum":0,"maximum":1000},"corner_radius":{"type":"number","minimum":0,"maximum":1000000},"opacity":{"type":"number","minimum":0,"maximum":1}}),
         vec!["node_id"],
+        false,
+        true,
+    );
+    add(
+        "set_effects",
+        "Replace a non-page layer's effect list; an empty array clears it. Supported types: drop_shadow {type,color,offset:{x,y},radius,spread?,visible?,show_behind?}, inner_shadow {type,color,offset:{x,y},radius,spread?,visible?}, layer_blur {type,radius,visible?}, and background_blur {type,radius,visible?}. Colors accept #RGB, #RRGGBB or #RRGGBBAA; radius is non-negative. Supports undo as one step; changes remain in memory until saved.",
+        json!({"node_id":id,"effects":{"type":"array","maxItems":100,"items":{"type":"object","additionalProperties":true,"properties":{"type":{"type":"string","enum":["drop_shadow","inner_shadow","layer_blur","background_blur"]},"color":{"type":"string","maxLength":9},"offset":{"type":["object","array"]},"radius":{"type":"number","minimum":0,"maximum":1000000},"spread":{"type":"number","minimum":-1000000,"maximum":1000000},"visible":{"type":"boolean"},"show_behind":{"type":"boolean"}},"required":["type"]}}}),
+        vec!["node_id", "effects"],
         false,
         true,
     );
@@ -2559,6 +2697,68 @@ mod tests {
             .unwrap()
             .iter()
             .any(|v| v == "desigma_create_node"));
+    }
+
+    #[test]
+    fn effects_are_set_cleared_and_undoable() {
+        let mut e = Engine::default();
+        let rect = create(&mut e, "rectangle", "Card");
+        let result = e
+            .call(
+                "desigma_set_effects",
+                json!({"node_id":rect,"effects":[
+                    {"type":"drop_shadow","color":"#00000040","offset":{"x":0,"y":4},"radius":12,"spread":2,"show_behind":false},
+                    {"type":"inner_shadow","color":"#FFFFFF80","offset":[0,0],"radius":4,"visible":false},
+                    {"type":"layer_blur","radius":6},
+                    {"type":"background_blur","radius":8,"visible":true}
+                ]}),
+            )
+            .unwrap();
+        assert_eq!(result["changed"], true);
+        let effects = &e.doc.get(NodeId(rect)).unwrap().effects;
+        assert_eq!(effects.len(), 4);
+        assert!(matches!(&effects[0], Effect::DropShadow { radius, spread, show_behind, .. } if *radius == 12.0 && *spread == 2.0 && !*show_behind));
+        assert!(matches!(&effects[1], Effect::InnerShadow { visible, spread, .. } if !*visible && *spread == 0.0));
+        assert!(matches!(&effects[2], Effect::LayerBlur { radius, .. } if *radius == 6.0));
+        assert!(matches!(&effects[3], Effect::BackgroundBlur { radius, visible } if *radius == 8.0 && *visible));
+
+        e.call("desigma_set_effects", json!({"node_id":rect,"effects":[]})).unwrap();
+        assert!(e.doc.get(NodeId(rect)).unwrap().effects.is_empty());
+        e.call("desigma_undo", json!({})).unwrap();
+        assert_eq!(e.doc.get(NodeId(rect)).unwrap().effects.len(), 4);
+        e.call("desigma_redo", json!({})).unwrap();
+        assert!(e.doc.get(NodeId(rect)).unwrap().effects.is_empty());
+    }
+
+    #[test]
+    fn effects_reject_invalid_input_atomically() {
+        let mut e = Engine::default();
+        let rect = create(&mut e, "rectangle", "Card");
+        let before = e.doc.to_json().unwrap();
+        let too_many: Vec<Value> = (0..101).map(|_| json!({"type":"layer_blur","radius":2})).collect();
+        for (name, args) in [
+            ("desigma_set_effects", json!({"node_id":1,"effects":[]})),
+            ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"glow","radius":4}]})),
+            ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"drop_shadow","offset":{"x":0,"y":2},"radius":4}]})),
+            ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"drop_shadow","color":"not-a-color","offset":{"x":0,"y":2},"radius":4}]})),
+            ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"layer_blur","radius":-1}]})),
+            ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"layer_blur","radius":4,"extra":true}]})),
+            ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"layer_blur","radius":4,"offset":"bad"}]})),
+            ("desigma_set_effects", json!({"node_id":rect,"effects":too_many})),
+            ("desigma_set_effects", json!({"node_id":rect,"effects":5})),
+        ] {
+            let err = e.call(name, args).unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+            assert_eq!(e.doc.to_json().unwrap(), before, "{name} changed the document");
+        }
+    }
+
+    #[test]
+    fn effects_tool_is_registered_as_a_writing_tool() {
+        let t = tools().into_iter().find(|t| t["name"] == "desigma_set_effects").unwrap();
+        assert_eq!(t["annotations"]["readOnlyHint"], false);
+        assert_eq!(t["annotations"]["idempotentHint"], true);
+        assert_eq!(t["inputSchema"]["required"], json!(["node_id", "effects"]));
     }
 
     #[test]
