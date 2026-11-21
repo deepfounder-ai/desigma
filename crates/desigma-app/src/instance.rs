@@ -128,6 +128,11 @@ pub fn set_context(ctx: &egui::Context) {
 /// Queues an open request and asks for a repaint. Callable before the UI exists.
 pub fn push(open: Open) {
     if let Ok(mut q) = INBOX.lock() {
+        // Finder opens can reach us twice (AppKit's delegate and the Apple event handler), and the
+        // queue is drained once a frame, so the duplicate is still sitting here.
+        if q.contains(&open) {
+            return;
+        }
         q.push(open);
     }
     if let Some(ctx) = CTX.get() {

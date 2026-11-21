@@ -97,6 +97,8 @@ impl Shell {
         crate::instance::set_context(&cc.egui_ctx);
         #[cfg(target_os = "macos")]
         crate::macos::register();
+        #[cfg(target_os = "macos")]
+        crate::macos::install_delegate();
         if launch {
             match crate::instance::Instance::start(&crate::instance::default_dir(), crate::instance::push) {
                 Ok(i) => shell._instance = i,
