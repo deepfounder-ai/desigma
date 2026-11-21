@@ -1722,8 +1722,15 @@ fn image_scale_mode(value: Option<&str>) -> Result<ImageScaleMode, String> {
     }
 }
 
+struct DecodedImage {
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+    key: String,
+}
+
 /// Validate, normalize and hash an image received as base64. WebP is stored as PNG.
-fn decode_image(spec: &str) -> Result<(Vec<u8>, u32, u32, String), String> {
+fn decode_image(spec: &str) -> Result<DecodedImage, String> {
     let bytes = base64::engine::general_purpose::STANDARD.decode(spec.trim()).map_err(|_| "image must be valid base64".to_string())?;
     if bytes.len() > 16 * 1024 * 1024 {
         return Err("image exceeds the 16 MiB limit".into());
@@ -1746,7 +1753,7 @@ fn decode_image(spec: &str) -> Result<(Vec<u8>, u32, u32, String), String> {
     };
     let digest = Sha256::digest(&bytes);
     let hash: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    Ok((bytes, width, height, format!("img-{hash}")))
+    Ok(DecodedImage { bytes, width, height, key: format!("img-{hash}") })
 }
 
 fn insert_image_asset<H: Host>(host: &mut H, bytes: Vec<u8>, key: &str) -> Result<bool, String> {
@@ -1762,8 +1769,8 @@ fn import_image<H: Host>(host: &mut H, a: ImportImageArgs) -> Result<Value, Stri
     if !parent.kind.is_container() {
         return Err("parent_id must identify a container".into());
     }
-    let (bytes, iw, ih, image_ref) = decode_image(&a.image)?;
-    let (iw, ih) = (iw as f32, ih as f32);
+    let image = decode_image(&a.image)?;
+    let (iw, ih) = (image.width as f32, image.height as f32);
     let (width, height) = match (a.width, a.height) {
         (Some(w), Some(h)) => (w, h),
         (Some(w), None) => (w, w * ih / iw),
@@ -1780,18 +1787,18 @@ fn import_image<H: Host>(host: &mut H, a: ImportImageArgs) -> Result<Value, Stri
     let name = a.name.unwrap_or_else(|| "Image".into());
     bounded_text("name", &name, 1024)?;
     let id = host.alloc_id()?;
-    let inserted = insert_image_asset(host, bytes, &image_ref)?;
+    let inserted = insert_image_asset(host, image.bytes, &image.key)?;
     let mut node = Node::rectangle(id, Rect::new(a.x, a.y, width, height));
     node.name = name.clone();
-    node.fills = vec![Paint { kind: PaintKind::Image { image_ref: image_ref.clone(), scale_mode: ImageScaleMode::Fill }, ..Paint::solid(Color::WHITE) }];
+    node.fills = vec![Paint { kind: PaintKind::Image { image_ref: image.key.clone(), scale_mode: ImageScaleMode::Fill }, ..Paint::solid(Color::WHITE) }];
     let index = host.doc().get(NodeId(a.parent_id)).map(|p| p.children.len()).unwrap_or(0);
     if let Err(e) = host.exec(Command::Insert { parent: NodeId(a.parent_id), index, nodes: vec![node] }) {
         if inserted {
-            host.doc_mut().images.remove(&image_ref);
+            host.doc_mut().images.remove(&image.key);
         }
         return Err(e);
     }
-    Ok(json!({"node_id":id,"name":name,"width":width,"height":height,"image_ref":image_ref,"changed":true}))
+    Ok(json!({"node_id":id,"name":name,"width":width,"height":height,"image_ref":image.key,"changed":true}))
 }
 
 fn set_image_fill<H: Host>(host: &mut H, a: SetImageFillArgs) -> Result<Value, String> {
@@ -1806,19 +1813,19 @@ fn set_image_fill<H: Host>(host: &mut H, a: SetImageFillArgs) -> Result<Value, S
         return Err(format!("paint_index {} is out of range for {} fills", a.paint_index, node.fills.len()));
     }
     let scale_mode = image_scale_mode(a.scale_mode.as_deref())?;
-    let (bytes, _, _, image_ref) = decode_image(&a.image)?;
-    let inserted = insert_image_asset(host, bytes, &image_ref)?;
-    node.fills[a.paint_index].kind = PaintKind::Image { image_ref: image_ref.clone(), scale_mode };
+    let image = decode_image(&a.image)?;
+    let inserted = insert_image_asset(host, image.bytes, &image.key)?;
+    node.fills[a.paint_index].kind = PaintKind::Image { image_ref: image.key.clone(), scale_mode };
     let changed = host.doc().get(NodeId(a.node_id)) != Some(&node);
     if changed {
         if let Err(e) = host.exec(Command::Update { node: Box::new(node) }) {
             if inserted {
-                host.doc_mut().images.remove(&image_ref);
+                host.doc_mut().images.remove(&image.key);
             }
             return Err(e);
         }
     }
-    Ok(json!({"node_id":a.node_id,"image_ref":image_ref,"paint_index":a.paint_index,"changed":changed}))
+    Ok(json!({"node_id":a.node_id,"image_ref":image.key,"paint_index":a.paint_index,"changed":changed}))
 }
 
 fn colour(spec: &str, field: &str) -> Result<Color, String> {

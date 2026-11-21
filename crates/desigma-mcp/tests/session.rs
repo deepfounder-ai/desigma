@@ -368,6 +368,8 @@ fn image_import_reads_workspace_paths_and_inlines_bytes() {
     fs::write(&outside_path, STANDARD.decode(ONE_PIXEL_PNG).unwrap()).unwrap();
     let outside = s.call("desigma_import_image", json!({"parent_id":page,"path":format!("../{outside_name}")})).unwrap_err();
     assert!(outside.contains("workspace"), "{outside}");
+    let inline = s.call("desigma_import_image", json!({"parent_id":page,"image":ONE_PIXEL_PNG})).unwrap_err();
+    assert!(inline.contains("path is required"), "{inline}");
     let _ = fs::remove_file(outside_path);
 }
 
