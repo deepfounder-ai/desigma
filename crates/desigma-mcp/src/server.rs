@@ -172,10 +172,7 @@ impl Session {
     fn inline_image(&self, mut args: Value, name_from_path: bool) -> Result<Value, String> {
         let Some(obj) = args.as_object_mut() else { return Ok(args) };
         if obj.contains_key("image") {
-            if obj.contains_key("path") {
-                return Err("pass either path or image, not both".into());
-            }
-            return Ok(args);
+            return Err("path is required; inline image bytes are internal".into());
         }
         let Some(path) = obj.remove("path") else { return Err("path is required".into()) };
         let path = path.as_str().ok_or("path must be a string")?;
