@@ -121,6 +121,9 @@ impl Engine {
     }
 }
 
+/// Effect variants exposed by `desigma_set_effects`.
+pub const EFFECT_TYPES: &[&str] = &["drop_shadow", "inner_shadow", "layer_blur", "background_blur"];
+
 /// Node-edit tools that `desigma_batch` may compose into one undo step.
 pub const BATCHABLE: &[&str] = &[
     "desigma_create_node",
@@ -1394,6 +1397,13 @@ fn effect_number(obj: &serde_json::Map<String, Value>, key: &str) -> Result<f32,
     Ok(number as f32)
 }
 
+fn effect_optional_number(obj: &serde_json::Map<String, Value>, key: &str, default: f32) -> Result<f32, String> {
+    match obj.get(key) {
+        Some(_) => effect_number(obj, key),
+        None => Ok(default),
+    }
+}
+
 fn effect_radius(obj: &serde_json::Map<String, Value>) -> Result<f32, String> {
     let radius = effect_number(obj, "radius")?;
     if radius < 0.0 {
@@ -1404,31 +1414,30 @@ fn effect_radius(obj: &serde_json::Map<String, Value>) -> Result<f32, String> {
 
 fn effect_offset(obj: &serde_json::Map<String, Value>) -> Result<Vec2, String> {
     let offset = obj.get("offset").ok_or("offset is required")?;
-    if let Some(v) = offset.as_object() {
-        let x = v.get("x").and_then(Value::as_f64).ok_or("offset.x must be a number")?;
-        let y = v.get("y").and_then(Value::as_f64).ok_or("offset.y must be a number")?;
-        if !x.is_finite() || !y.is_finite() || x.abs() > 1_000_000.0 || y.abs() > 1_000_000.0 {
-            return Err("offset must be finite and within ±1000000".into());
+    let (x, y) = if let Some(v) = offset.as_object() {
+        for key in v.keys() {
+            if key != "x" && key != "y" {
+                return Err(format!("unknown offset field '{key}'"));
+            }
         }
-        return Ok(Vec2::new(x as f32, y as f32));
-    }
-    if let Some(v) = offset.as_array() {
+        (v.get("x").and_then(Value::as_f64).ok_or("offset.x must be a number")?, v.get("y").and_then(Value::as_f64).ok_or("offset.y must be a number")?)
+    } else if let Some(v) = offset.as_array() {
         if v.len() != 2 {
             return Err("offset array must be [x, y]".into());
         }
-        let x = v[0].as_f64().ok_or("offset[0] must be a number")?;
-        let y = v[1].as_f64().ok_or("offset[1] must be a number")?;
-        if !x.is_finite() || !y.is_finite() || x.abs() > 1_000_000.0 || y.abs() > 1_000_000.0 {
-            return Err("offset must be finite and within ±1000000".into());
-        }
-        return Ok(Vec2::new(x as f32, y as f32));
+        (v[0].as_f64().ok_or("offset[0] must be a number")?, v[1].as_f64().ok_or("offset[1] must be a number")?)
+    } else {
+        return Err("offset must be {x,y} or [x,y]".into());
+    };
+    if !x.is_finite() || !y.is_finite() || x.abs() > 1_000_000.0 || y.abs() > 1_000_000.0 {
+        return Err("offset must be finite and within ±1000000".into());
     }
-    Err("offset must be {x,y} or [x,y]".into())
+    Ok(Vec2::new(x as f32, y as f32))
 }
 
 fn effect_color(obj: &serde_json::Map<String, Value>) -> Result<Color, String> {
     let spec = obj.get("color").and_then(Value::as_str).ok_or("color is required")?;
-    Color::from_hex(spec).ok_or_else(|| format!("invalid effect color '{spec}' (use #RGB, #RRGGBB or #RRGGBBAA)"))
+    Color::from_hex(spec.trim()).ok_or_else(|| format!("invalid effect color '{spec}' (use #RGB, #RRGGBB or #RRGGBBAA)"))
 }
 
 fn parse_effect(value: &Value) -> Result<Effect, String> {
@@ -1438,10 +1447,7 @@ fn parse_effect(value: &Value) -> Result<Effect, String> {
     match kind {
         "drop_shadow" => {
             reject_effect_keys(obj, &["type", "color", "offset", "radius", "spread", "visible", "show_behind"])?;
-            let spread = match obj.get("spread") {
-                Some(_) => effect_number(obj, "spread")?,
-                None => 0.0,
-            };
+            let spread = effect_optional_number(obj, "spread", 0.0)?;
             Ok(Effect::DropShadow {
                 color: effect_color(obj)?,
                 offset: effect_offset(obj)?,
@@ -1453,10 +1459,7 @@ fn parse_effect(value: &Value) -> Result<Effect, String> {
         }
         "inner_shadow" => {
             reject_effect_keys(obj, &["type", "color", "offset", "radius", "spread", "visible"])?;
-            let spread = match obj.get("spread") {
-                Some(_) => effect_number(obj, "spread")?,
-                None => 0.0,
-            };
+            let spread = effect_optional_number(obj, "spread", 0.0)?;
             Ok(Effect::InnerShadow { color: effect_color(obj)?, offset: effect_offset(obj)?, radius: effect_radius(obj)?, spread, visible })
         }
         "layer_blur" => {
@@ -1467,7 +1470,7 @@ fn parse_effect(value: &Value) -> Result<Effect, String> {
             reject_effect_keys(obj, &["type", "radius", "visible"])?;
             Ok(Effect::BackgroundBlur { radius: effect_radius(obj)?, visible })
         }
-        other => Err(format!("effect type must be drop_shadow, inner_shadow, layer_blur, or background_blur, got {other}")),
+        other => Err(format!("effect type must be one of: {}, got {other}", EFFECT_TYPES.join(", "))),
     }
 }
 
@@ -2036,10 +2039,14 @@ pub fn tools() -> Vec<Value> {
         false,
         true,
     );
+    let effect_types = EFFECT_TYPES.join(", ");
+    let set_effects_description = format!(
+        "Replace a non-page layer's effect list; an empty array clears it. Supported types: {effect_types}. drop_shadow/inner_shadow take color, offset ({{x,y}} or [x,y]), radius, optional spread, visible, and (drop only) show_behind; blur types take radius and visible. Colors accept #RGB, #RRGGBB or #RRGGBBAA; radius is non-negative. Supports undo as one step; changes remain in memory until saved."
+    );
     add(
         "set_effects",
-        "Replace a non-page layer's effect list; an empty array clears it. Supported types: drop_shadow {type,color,offset:{x,y},radius,spread?,visible?,show_behind?}, inner_shadow {type,color,offset:{x,y},radius,spread?,visible?}, layer_blur {type,radius,visible?}, and background_blur {type,radius,visible?}. Colors accept #RGB, #RRGGBB or #RRGGBBAA; radius is non-negative. Supports undo as one step; changes remain in memory until saved.",
-        json!({"node_id":id,"effects":{"type":"array","maxItems":100,"items":{"type":"object","additionalProperties":true,"properties":{"type":{"type":"string","enum":["drop_shadow","inner_shadow","layer_blur","background_blur"]},"color":{"type":"string","maxLength":9},"offset":{"type":["object","array"]},"radius":{"type":"number","minimum":0,"maximum":1000000},"spread":{"type":"number","minimum":-1000000,"maximum":1000000},"visible":{"type":"boolean"},"show_behind":{"type":"boolean"}},"required":["type"]}}}),
+        &set_effects_description,
+        json!({"node_id":id,"effects":{"type":"array","maxItems":100,"items":{"type":"object","additionalProperties":true,"properties":{"type":{"type":"string","enum":EFFECT_TYPES},"color":{"type":"string","maxLength":9},"offset":{"type":["object","array"]},"radius":{"type":"number","minimum":0,"maximum":1000000},"spread":{"type":"number","minimum":-1000000,"maximum":1000000},"visible":{"type":"boolean"},"show_behind":{"type":"boolean"}},"required":["type"]}}}),
         vec!["node_id", "effects"],
         false,
         true,
@@ -2744,6 +2751,7 @@ mod tests {
             ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"layer_blur","radius":-1}]})),
             ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"layer_blur","radius":4,"extra":true}]})),
             ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"layer_blur","radius":4,"offset":"bad"}]})),
+            ("desigma_set_effects", json!({"node_id":rect,"effects":[{"type":"drop_shadow","color":"#000000","offset":{"x":0,"y":4,"z":1},"radius":2}]})),
             ("desigma_set_effects", json!({"node_id":rect,"effects":too_many})),
             ("desigma_set_effects", json!({"node_id":rect,"effects":5})),
         ] {
