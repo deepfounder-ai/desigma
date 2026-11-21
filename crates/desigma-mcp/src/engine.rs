@@ -929,12 +929,13 @@ fn create_style<H: Host>(host: &mut H, a: CreateStyleArgs) -> Result<Value, Stri
         other => return Err(format!("kind must be fill, stroke, or text, got {other}")),
     };
     let (key, _) = host.doc().fresh_style_key("MCP style");
+    let display_name = name.clone();
     let mut styles = host.doc().styles.clone();
     let mut style_meta = host.doc().style_meta.clone();
     styles.insert(key.clone(), style);
     style_meta.insert(key.clone(), StyleMeta { name, key: None, description, property });
     host.exec(Command::SetStyles { styles, style_meta })?;
-    Ok(json!({"style_key":key,"name":a.name,"kind":a.kind,"changed":true}))
+    Ok(json!({"style_key":key,"name":display_name,"kind":a.kind,"changed":true}))
 }
 
 fn resolve_style(doc: &Document, reference: &str) -> Result<String, String> {
@@ -952,14 +953,11 @@ fn resolve_style(doc: &Document, reference: &str) -> Result<String, String> {
 fn apply_style<H: Host>(host: &mut H, a: ApplyStyleArgs) -> Result<Value, String> {
     let key = resolve_style(host.doc(), &a.style)?;
     let style = host.doc().styles.get(&key).cloned().ok_or_else(|| format!("style '{key}' not found"))?;
-    let property = host.doc().style_meta.get(&key).map(|m| m.property).unwrap_or(match &style {
-        Style::Text(_) => StyleProperty::Text,
-        _ => StyleProperty::Fill,
-    });
+    let property = desigma_doc::style_property(host.doc(), &key);
     if matches!(property, StyleProperty::Effect | StyleProperty::Grid) {
         return Err("effect and grid styles are not supported by apply_style yet".into());
     }
-    let nodes = variable_nodes(host, &a.node_ids)?;
+    let nodes = target_nodes(host, &a.node_ids)?;
     if property == StyleProperty::Text {
         for id in &nodes {
             if !matches!(node(host, id.0)?.kind, NodeKind::Text(_)) {
@@ -1010,7 +1008,7 @@ fn apply_style<H: Host>(host: &mut H, a: ApplyStyleArgs) -> Result<Value, String
 }
 
 fn detach_style<H: Host>(host: &mut H, a: DetachStyleArgs) -> Result<Value, String> {
-    let nodes = variable_nodes(host, &a.node_ids)?;
+    let nodes = target_nodes(host, &a.node_ids)?;
     if let Some(property) = a.property.as_deref() {
         if !["fill", "stroke", "text", "effect", "grid"].contains(&property) {
             return Err("property must be fill, stroke, text, effect, or grid".into());
@@ -1246,7 +1244,7 @@ fn set_variable_value<H: Host>(host: &mut H, a: SetVariableValueArgs) -> Result<
 }
 
 /// Validate a variable-tool node list: non-empty, bounded, existing, non-page, deduplicated.
-fn variable_nodes<H: Host>(host: &H, ids: &[u64]) -> Result<Vec<NodeId>, String> {
+fn target_nodes<H: Host>(host: &H, ids: &[u64]) -> Result<Vec<NodeId>, String> {
     if ids.is_empty() {
         return Err("node_ids must contain at least one node".into());
     }
@@ -1257,7 +1255,7 @@ fn variable_nodes<H: Host>(host: &H, ids: &[u64]) -> Result<Vec<NodeId>, String>
     for id in ids {
         let n = node(host, *id)?;
         if n.parent.is_none() {
-            return Err("page roots cannot be targeted by variable tools".into());
+            return Err("page roots cannot be targeted by this tool".into());
         }
         if !out.contains(&n.id) {
             out.push(n.id);
@@ -1267,7 +1265,7 @@ fn variable_nodes<H: Host>(host: &H, ids: &[u64]) -> Result<Vec<NodeId>, String>
 }
 
 fn bind_variable<H: Host>(host: &mut H, a: BindVariableArgs) -> Result<Value, String> {
-    let nodes = variable_nodes(host, &a.node_ids)?;
+    let nodes = target_nodes(host, &a.node_ids)?;
     let expected = desigma_doc::property_kind(&a.property).ok_or_else(|| format!("unknown variable property '{}'", a.property))?;
     let (kind, scopes) =
         host.doc().variables.get(&a.variable_id).map(|v| (v.kind, v.scopes.clone())).ok_or_else(|| format!("variable {} not found", a.variable_id))?;
@@ -1301,7 +1299,7 @@ fn bind_variable<H: Host>(host: &mut H, a: BindVariableArgs) -> Result<Value, St
 }
 
 fn detach_variable<H: Host>(host: &mut H, a: DetachVariableArgs) -> Result<Value, String> {
-    let nodes = variable_nodes(host, &a.node_ids)?;
+    let nodes = target_nodes(host, &a.node_ids)?;
     if desigma_doc::property_kind(&a.property).is_none() {
         return Err(format!("unknown variable property '{}'", a.property));
     }
@@ -1323,7 +1321,7 @@ fn detach_variable<H: Host>(host: &mut H, a: DetachVariableArgs) -> Result<Value
 }
 
 fn set_variable_mode<H: Host>(host: &mut H, a: SetVariableModeArgs) -> Result<Value, String> {
-    let nodes = variable_nodes(host, &a.node_ids)?;
+    let nodes = target_nodes(host, &a.node_ids)?;
     let store = VariableStore::from_doc(host.doc());
     if !store.collections.contains_key(&a.collection_id) {
         return Err(format!("variable collection {} not found", a.collection_id));
@@ -2883,6 +2881,7 @@ mod tests {
         let rect = create(&mut e, "rectangle", "Card");
         let text_style = e.call("desigma_create_style", json!({"name":"Type/Body","kind":"text","text":{"font_size":15}})).unwrap();
         let text_key = text_style["style_key"].as_str().unwrap().to_string();
+        e.doc.styles.insert("Effect/Glow".into(), Style::Effect(vec![]));
         let before = e.doc.to_json().unwrap();
         for (name, args) in [
             ("desigma_create_style", json!({"name":"Bad","kind":"fill"})),
@@ -2896,6 +2895,7 @@ mod tests {
             ("desigma_apply_style", json!({"node_ids":[rect],"style":text_key})),
             ("desigma_apply_style", json!({"node_ids":[1],"style":text_key})),
             ("desigma_apply_style", json!({"node_ids":[],"style":text_key})),
+            ("desigma_apply_style", json!({"node_ids":[rect],"style":"Effect/Glow"})),
             ("desigma_detach_style", json!({"node_ids":[rect],"property":"banana"})),
             ("desigma_detach_style", json!({"node_ids":[],"property":"fill"})),
         ] {
