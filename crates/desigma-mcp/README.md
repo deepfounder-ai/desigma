@@ -96,6 +96,9 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_create_node` | Add a frame, rectangle, ellipse, or text layer to a container. |
 | `desigma_duplicate_node` | Copy a non-page layer and its subtree in place, after the source. New IDs; optional parent-space `offset` (10 by default, 0 in auto layout). Refuses page roots and layers inside an instance. |
 | `desigma_update_node` | Change name, position, dimensions, visibility, opacity, or plain text. |
+| `desigma_create_style` | Create a shared fill, stroke, or text style; returns its style key. |
+| `desigma_apply_style` | Apply a shared style to 1–500 layers and record the reference. |
+| `desigma_detach_style` | Remove shared-style references from 1–500 layers, keeping current values. |
 | `desigma_batch` | Apply 1–100 node edits as one undo step. Later operations reference node IDs from earlier ones with `$INDEX` in `node_id`, `parent_id`, or `node_ids`. |
 | `desigma_set_auto_layout` | Create, update, or remove auto layout on a frame, component, or instance. |
 | `desigma_set_layout_child` | Set a layer's auto-layout sizing, grow, min/max, or absolute behavior. |
