@@ -2710,6 +2710,29 @@ mod tests {
     }
 
     #[test]
+    fn engine_tool_reference_lists_every_tool() {
+        let reference = include_str!("../README.md");
+        for tool in tools() {
+            let name = tool["name"].as_str().unwrap();
+            assert!(reference.contains(name), "{name} is missing from the MCP README tool table");
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn server_tool_reference_and_root_count_are_current() {
+        let reference = include_str!("../README.md");
+        let tools = crate::server::tools();
+        for tool in &tools {
+            let name = tool.name.as_ref();
+            assert!(reference.contains(name), "{name} is missing from the MCP README tool table");
+        }
+        let root = include_str!("../../../README.md");
+        let count = tools.len();
+        assert!(root.contains(&format!("It provides {count} tools")), "the root README must advertise {count} tools");
+    }
+
+    #[test]
     fn export_image_is_annotated_as_a_writing_idempotent_tool() {
         let t = tools().into_iter().find(|t| t["name"] == "desigma_export_image").unwrap();
         assert_eq!(t["annotations"]["readOnlyHint"], false);
