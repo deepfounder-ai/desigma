@@ -80,6 +80,9 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_list_files` | Design files in this user's library, plus `shared/` copies of files opened from outside it while the agent bridge is on. Each `path` is valid for `desigma_open_file`. |
 | `desigma_open_file` | Import a native `.desigma`, `.fig`, `.pen` (Pencil), SVG, or supported JSON design into the session. |
 | `desigma_new_document` | Start an empty document with one page. |
+| `desigma_create_page` | Append an empty page with an optional background colour. |
+| `desigma_delete_page` | Delete one page and its subtree; the last page is refused. |
+| `desigma_rename_page` | Rename a page. |
 | `desigma_save_file` | Write the session to a native `.desigma` file: a new one, or an existing one with `overwrite: true`. |
 | `desigma_get_document` | Read document name, pages, counts, undo/redo availability, and `session` (`"file"` or `"editor"`). |
 | `desigma_list_nodes` | Search names case-insensitively or list direct children; paginate using `next_offset`. |
@@ -96,12 +99,24 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_create_node` | Add a frame, rectangle, ellipse, or text layer to a container. |
 | `desigma_duplicate_node` | Copy a non-page layer and its subtree in place, after the source. New IDs; optional parent-space `offset` (10 by default, 0 in auto layout). Refuses page roots and layers inside an instance. |
 | `desigma_update_node` | Change name, position, dimensions, visibility, opacity, or plain text. |
+| `desigma_set_appearance` | Set fill, stroke, stroke width, uniform corner radius, or opacity on a layer. |
+| `desigma_set_text_style` | Set text content, font size/weight/family, line height, letter spacing, alignment, auto-resize mode, and max lines. |
+| `desigma_move_node` | Reparent a layer into another container, optionally at an index, keeping its parent-relative transform. |
+| `desigma_import_svg` | Import SVG markup as a frame with real child layers; bitmap bytes become document assets. |
 | `desigma_batch` | Apply 1–100 node edits as one undo step. Later operations reference node IDs from earlier ones with `$INDEX` in `node_id`, `parent_id`, or `node_ids`. |
 | `desigma_set_auto_layout` | Create, update, or remove auto layout on a frame, component, or instance. |
 | `desigma_set_layout_child` | Set a layer's auto-layout sizing, grow, min/max, or absolute behavior. |
 | `desigma_delete_node` | Remove a non-page layer and its descendants. |
+| `desigma_create_component` | Turn a frame, group, or section into a main component in place. |
+| `desigma_create_instance` | Place an instance of a main component in a container at (x, y). |
+| `desigma_detach_instance` | Detach an instance in place, keeping its mirrored subtree as ordinary layers. |
+| `desigma_sync_instances` | Re-apply a main component's current state to all of its instances. |
 | `desigma_undo` / `desigma_redo` | Traverse the edit history. In the editor it is the user's own undo stack, so `desigma_undo` may undo the user's latest edit. |
 | `desigma_export_image` | Render a node to a PNG at `scale` (0.25–4, default 1) and write it to `path` inside the workspace, overwriting if present; returns `{path,width,height}`. Works in both session types. |
+| `desigma_add_keyframe` | Add or update a keyframe of an animatable layer property at `time_ms`, with optional easing, bezier, or spring. |
+| `desigma_apply_animation_preset` | Apply a named enter, exit, cycle, or basic-motion preset to 1–100 layers. |
+| `desigma_set_timeline` | Set a page's Motion duration, fps, and loop flag. |
+| `desigma_export_animation` | Render one layer's animation to GIF, WebM (AV1), or a ZIP of PNG frames. |
 | `desigma_get_selection` | Read the editor's current selection. Editor only; fails in a file session. |
 | `desigma_select_nodes` | Select 1–500 `node_ids` on one page in the editor (switching to that page) and, with `reveal` (default `true`), scroll/zoom to them. Editor only; fails in a file session. |
 
