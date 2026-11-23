@@ -22,10 +22,12 @@ pub enum Language {
     SwiftUi,
     Compose,
     React,
+    Flutter,
+    Vue,
 }
 
 impl Language {
-    pub const ALL: [Language; 5] = [Language::Css, Language::Tailwind, Language::SwiftUi, Language::Compose, Language::React];
+    pub const ALL: [Language; 7] = [Language::Css, Language::Tailwind, Language::SwiftUi, Language::Compose, Language::React, Language::Flutter, Language::Vue];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -34,6 +36,8 @@ impl Language {
             Self::SwiftUi => "SwiftUI",
             Self::Compose => "Compose",
             Self::React => "React",
+            Self::Flutter => "Flutter",
+            Self::Vue => "Vue",
         }
     }
 
@@ -45,6 +49,8 @@ impl Language {
             Self::SwiftUi => (desigma_export::swiftui_for(doc, node), desigma_export::swiftui_animation_for(doc, node), "// Animation (Motion)"),
             Self::Compose => (desigma_export::compose_for(doc, node), desigma_export::compose_animation_for(doc, node), "// Animation (Motion)"),
             Self::React => (desigma_export::react_with(doc, node, &desigma_export::ReactOptions { tailwind: react_tailwind }), String::new(), ""),
+            Self::Flutter => (desigma_export::flutter_for(doc, node), String::new(), ""),
+            Self::Vue => (desigma_export::vue_for(doc, node), String::new(), ""),
         };
         if motion.is_empty() {
             code

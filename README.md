@@ -103,7 +103,7 @@ Every screenshot here is the real app on its built-in showcase file, captured of
       <br>
       <sub>Dev mode: status, annotations, measurements and SwiftUI for the selected card.</sub>
       <h3>Hand off as code</h3>
-      Switch to Dev mode for measurements, a box model and generated code in CSS, Tailwind, SwiftUI, Jetpack Compose or React. Mark frames Ready for dev, and add annotations and links for whoever builds them.
+      Switch to Dev mode for measurements, a box model and generated code in CSS, Tailwind, SwiftUI, Jetpack Compose, React, Flutter or Vue. Mark frames Ready for dev, and add annotations and links for whoever builds them.
       <br><br>
       <b>Copy</b> a snippet in one click, or switch language without leaving the panel.
     </td>

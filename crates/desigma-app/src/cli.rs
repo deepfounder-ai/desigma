@@ -242,9 +242,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> 
             "--find" => o.find = Some(it.next().ok_or("--find needs the text to search for")?),
             "--replace-with" => o.replace_with = Some(it.next().ok_or("--replace-with needs the replacement text")?),
             "--dev" => {
-                let l = it.next().ok_or("--dev needs css, tailwind, swiftui, compose or react")?;
-                if !matches!(l.as_str(), "css" | "tailwind" | "swiftui" | "compose" | "react") {
-                    return Err(format!("unknown language '{l}' (expected css, tailwind, swiftui, compose or react)"));
+                let l = it.next().ok_or("--dev needs css, tailwind, swiftui, compose, react, flutter or vue")?;
+                if !matches!(l.as_str(), "css" | "tailwind" | "swiftui" | "compose" | "react" | "flutter" | "vue") {
+                    return Err(format!("unknown language '{l}' (expected css, tailwind, swiftui, compose, react, flutter or vue)"));
                 }
                 o.dev = Some(l);
             }
@@ -294,7 +294,7 @@ pub const USAGE: &str = "usage: desigma [FILE|desigma://join/LINK|desigma://open
   --gpu      draw the canvas on the GPU; --screenshot uses the CPU renderer unless this is given
   --bridge   let desigma-mcp control this editor (Preferences → Allow MCP agents… makes it permanent)
   --library  use DIR as the projects library instead of the default ($DESIGMA_LIBRARY or the user data folder); projects live in DIR/projects
-  --dev      open Dev mode with a code language (css|tailwind|swiftui|compose|react); --dev-demo marks the selection Ready for dev with an annotation
+  --dev      open Dev mode with a code language (css|tailwind|swiftui|compose|react|flutter|vue); --dev-demo marks the selection Ready for dev with an annotation
   --motion   open Motion mode with a demo animation on the selected layer
   --seed-library  write the showcase sample files (a project with three files) into DIR and exit
   --find     open the Find and replace panel searching for TEXT (--replace-with TEXT shows the replace row)
