@@ -42,7 +42,7 @@
     </td>
     <td width="25%" valign="top">
       <h3>🔤 Open fonts, built in</h3>
-      Inter ships inside the binary. Any other open-licensed family a file uses is fetched from Fontsource and cached, and proprietary fonts map to metric-compatible open alternatives.
+      Inter ships inside the binary. Any other open-licensed family a file uses is fetched from Fontsource and cached, and proprietary fonts map to metric-compatible open alternatives (CJK system fonts and the older `Noto Sans CJK …` naming included). Downloads follow `HTTPS_PROXY` when one is set, and a failed download is retried once.
     </td>
   </tr>
 </table>
