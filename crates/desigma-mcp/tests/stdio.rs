@@ -16,11 +16,10 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
         let schema = tools.iter().find(|t| t.name == "desigma_delete_page").unwrap().input_schema.clone();
         assert_eq!(schema["properties"]["node_id"]["type"], "integer");
-        // 39 upstream tools + 5 for components, instances and page rename
         for name in ["desigma_create_component", "desigma_create_instance", "desigma_detach_instance", "desigma_sync_instances", "desigma_rename_page"] {
             assert!(tools.iter().any(|t| t.name == name), "missing component tool {name}");
         }
-        assert_eq!(tools.len(), 44);
+        assert_eq!(tools.len(), 47);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -750,6 +749,32 @@ async fn instance_overrides_survive_sync_and_main_edits_follow() {
         let kind = reverted.structured_content.unwrap()["node"]["kind"].clone();
         assert!(kind.get("Frame").is_some(), "undo must reach the conversion, not a no-op sync: {kind}");
 
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
+/// Shared fill styles can be created, applied and detached over stdio.
+#[tokio::test]
+async fn shared_styles_round_trip_over_stdio() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+        let rect = client.call_tool(call("desigma_create_node", json!({"parent_id":1,"kind":"rectangle","name":"Card"}))).await.unwrap();
+        let rect_id = rect.structured_content.unwrap()["node"]["id"].clone();
+        let style = client.call_tool(call("desigma_create_style", json!({"name":"Color/Brand","kind":"fill","color":"#2F5BFF"}))).await.unwrap();
+        assert_eq!(style.is_error, Some(false), "{style:?}");
+        let style_key = style.structured_content.unwrap()["style_key"].clone();
+        let applied = client.call_tool(call("desigma_apply_style", json!({"node_ids":[rect_id.clone()],"style":style_key.clone()}))).await.unwrap();
+        assert_eq!(applied.is_error, Some(false), "{applied:?}");
+        let node = client.call_tool(call("desigma_get_node", json!({"node_id":rect_id.clone()}))).await.unwrap();
+        assert_eq!(node.structured_content.unwrap()["node"]["style_refs"]["fill"], style_key);
+        let detached = client.call_tool(call("desigma_detach_style", json!({"node_ids":[rect_id],"property":"fill"}))).await.unwrap();
+        assert_eq!(detached.is_error, Some(false), "{detached:?}");
         client.cancel().await.unwrap();
     })
     .await

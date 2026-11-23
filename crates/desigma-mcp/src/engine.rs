@@ -1,7 +1,7 @@
 //! Typed, local document operations shared by the MCP transport and future bridges.
 use desigma_doc::{
-    AutoLayout, Color, Command, Document, Effect, History, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind, Paint, Rect, Sizing, TextAlignH,
-    TextAlignV, TextAutoResize, TextStyle, VariableKind, VariableStore, VariableValue, Vec2,
+    AutoLayout, Color, Command, Document, Effect, History, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind, Paint, Rect, Sizing, Style,
+    StyleMeta, StyleProperty, TextAlignH, TextAlignV, TextAutoResize, TextStyle, VariableKind, VariableStore, VariableValue, Vec2,
 };
 use desigma_svg::ImportOptions;
 use serde::{de::DeserializeOwned, Deserialize};
@@ -150,6 +150,9 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_set_appearance",
     "desigma_set_effects",
     "desigma_set_text_style",
+    "desigma_create_style",
+    "desigma_apply_style",
+    "desigma_detach_style",
     "desigma_set_auto_layout",
     "desigma_set_layout_child",
     "desigma_create_variable_collection",
@@ -295,6 +298,9 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             let a: TextStyleArgs = parse(args)?;
             set_text_style(host, a)
         }
+        "desigma_create_style" => create_style(host, parse(args)?),
+        "desigma_apply_style" => apply_style(host, parse(args)?),
+        "desigma_detach_style" => detach_style(host, parse(args)?),
         "desigma_set_auto_layout" => set_auto_layout(host, parse(args)?),
         "desigma_set_layout_child" => set_layout_child(host, parse(args)?),
         "desigma_import_svg" => import_svg(host, parse(args)?),
@@ -831,6 +837,212 @@ fn set_text_style<H: Host>(host: &mut H, a: TextStyleArgs) -> Result<Value, Stri
     commit(host, node, applied)
 }
 
+fn reject_style_keys(obj: &serde_json::Map<String, Value>, allowed: &[&str], subject: &str) -> Result<(), String> {
+    for key in obj.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!("unknown {subject} field '{key}'"));
+        }
+    }
+    Ok(())
+}
+
+fn parse_text_style(value: &Value) -> Result<TextStyle, String> {
+    let obj = value.as_object().ok_or("text must be an object")?;
+    reject_style_keys(obj, &["font_size", "font_weight", "font_family", "line_height", "letter_spacing", "align_h", "align_v"], "text style")?;
+    let mut style = TextStyle::default();
+    if let Some(value) = obj.get("font_size") {
+        let size = value.as_f64().ok_or("font_size must be a number")?;
+        if !size.is_finite() || !(1.0..=1000.0).contains(&size) {
+            return Err("font_size must be within 1..=1000".into());
+        }
+        style.font_size = size as f32;
+    }
+    if let Some(value) = obj.get("font_weight") {
+        let weight = value.as_u64().ok_or("font_weight must be an integer")?;
+        if !(100..=900).contains(&weight) || weight % 100 != 0 {
+            return Err("font_weight must be 100..=900 in steps of 100".into());
+        }
+        style.font_weight = weight as u16;
+    }
+    if let Some(value) = obj.get("font_family") {
+        let family = value.as_str().ok_or("font_family must be a string")?;
+        if family.trim().is_empty() {
+            return Err("font_family must not be empty".into());
+        }
+        bounded_text("font_family", family, 256)?;
+        style.font_family = family.to_string();
+    }
+    if let Some(value) = obj.get("line_height") {
+        let px = value.as_f64().ok_or("line_height must be a number")?;
+        if !px.is_finite() || !(0.0..=1000.0).contains(&px) {
+            return Err("line_height must be within 0..=1000".into());
+        }
+        style.line_height = LineHeight::Pixels(px as f32);
+    }
+    if let Some(value) = obj.get("letter_spacing") {
+        let px = value.as_f64().ok_or("letter_spacing must be a number")?;
+        if !px.is_finite() || !(-100.0..=100.0).contains(&px) {
+            return Err("letter_spacing must be within -100..=100".into());
+        }
+        style.letter_spacing = px as f32;
+    }
+    if let Some(value) = obj.get("align_h") {
+        style.align_h = match value.as_str().ok_or("align_h must be a string")? {
+            "left" => TextAlignH::Left,
+            "center" => TextAlignH::Center,
+            "right" => TextAlignH::Right,
+            "justified" => TextAlignH::Justified,
+            other => return Err(format!("align_h must be left|center|right|justified, got {other}")),
+        };
+    }
+    if let Some(value) = obj.get("align_v") {
+        style.align_v = match value.as_str().ok_or("align_v must be a string")? {
+            "top" => TextAlignV::Top,
+            "center" => TextAlignV::Center,
+            "bottom" => TextAlignV::Bottom,
+            other => return Err(format!("align_v must be top|center|bottom, got {other}")),
+        };
+    }
+    Ok(style)
+}
+
+fn create_style<H: Host>(host: &mut H, a: CreateStyleArgs) -> Result<Value, String> {
+    let name = non_empty_name("name", &a.name)?;
+    let description = a.description.unwrap_or_default();
+    bounded_text("description", &description, 100_000)?;
+    let (style, property) = match a.kind.as_str() {
+        "fill" | "stroke" => {
+            if a.text.is_some() {
+                return Err("text is only valid for kind=text".into());
+            }
+            let spec = a.color.as_deref().ok_or("color is required for fill/stroke styles")?;
+            let color = Color::from_hex(spec).ok_or_else(|| format!("invalid style color '{spec}' (use #RGB, #RRGGBB or #RRGGBBAA)"))?;
+            let opacity = a.opacity.unwrap_or(1.0);
+            if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+                return Err("opacity must be within 0..=1".into());
+            }
+            let paint = Paint { opacity, ..Paint::solid(color) };
+            let property = if a.kind == "stroke" { StyleProperty::Stroke } else { StyleProperty::Fill };
+            (Style::Fill(vec![paint]), property)
+        }
+        "text" => {
+            if a.color.is_some() || a.opacity.is_some() {
+                return Err("color/opacity are not valid for kind=text".into());
+            }
+            let text = a.text.as_ref().ok_or("text is required for kind=text")?;
+            (Style::Text(parse_text_style(text)?), StyleProperty::Text)
+        }
+        other => return Err(format!("kind must be fill, stroke, or text, got {other}")),
+    };
+    let (key, _) = host.doc().fresh_style_key("MCP style");
+    let display_name = name.clone();
+    let mut styles = host.doc().styles.clone();
+    let mut style_meta = host.doc().style_meta.clone();
+    styles.insert(key.clone(), style);
+    style_meta.insert(key.clone(), StyleMeta { name, key: None, description, property });
+    host.exec(Command::SetStyles { styles, style_meta })?;
+    Ok(json!({"style_key":key,"name":display_name,"kind":a.kind,"changed":true}))
+}
+
+fn resolve_style(doc: &Document, reference: &str) -> Result<String, String> {
+    if doc.styles.contains_key(reference) {
+        return Ok(reference.to_string());
+    }
+    let matches: Vec<String> = doc.style_meta.iter().filter(|(_, meta)| meta.name == reference).map(|(key, _)| key.clone()).collect();
+    match matches.as_slice() {
+        [key] => Ok(key.clone()),
+        [] => Err(format!("style '{reference}' not found")),
+        _ => Err(format!("style name '{reference}' is ambiguous; pass a style key")),
+    }
+}
+
+fn apply_style<H: Host>(host: &mut H, a: ApplyStyleArgs) -> Result<Value, String> {
+    let key = resolve_style(host.doc(), &a.style)?;
+    let style = host.doc().styles.get(&key).cloned().ok_or_else(|| format!("style '{key}' not found"))?;
+    let property = desigma_doc::style_property(host.doc(), &key);
+    if matches!(property, StyleProperty::Effect | StyleProperty::Grid) {
+        return Err("effect and grid styles are not supported by apply_style yet".into());
+    }
+    let nodes = target_nodes(host, &a.node_ids)?;
+    if property == StyleProperty::Text {
+        for id in &nodes {
+            if !matches!(node(host, id.0)?.kind, NodeKind::Text(_)) {
+                return Err(format!("text style '{key}' requires text layers; node {} is not text", id.0));
+            }
+        }
+    }
+    let mut updates = Vec::new();
+    for id in &nodes {
+        let mut n = node(host, id.0)?.clone();
+        match (&style, property) {
+            (Style::Fill(paints), StyleProperty::Stroke) => {
+                n.stroke.paints = paints.clone();
+                n.style_refs.insert("stroke".into(), key.clone());
+            }
+            (Style::Fill(paints), StyleProperty::Fill) => {
+                if let NodeKind::Text(t) = &mut n.kind {
+                    t.style.fills = paints.clone();
+                } else {
+                    n.fills = paints.clone();
+                }
+                n.style_refs.insert("fill".into(), key.clone());
+            }
+            (Style::Text(ts), StyleProperty::Text) => {
+                if let NodeKind::Text(t) = &mut n.kind {
+                    let mut base = ts.clone();
+                    base.fills = t.style.fills.clone();
+                    t.style = base;
+                    for run in &mut t.runs {
+                        let mut run_style = ts.clone();
+                        run_style.fills = run.style.fills.clone();
+                        run.style = run_style;
+                    }
+                    n.style_refs.insert("text".into(), key.clone());
+                }
+            }
+            _ => {}
+        }
+        if host.doc().get(*id) != Some(&n) {
+            updates.push(Command::Update { node: Box::new(n) });
+        }
+    }
+    let changed = !updates.is_empty();
+    if changed {
+        host.exec(Command::Batch(updates))?;
+    }
+    Ok(json!({"node_ids":a.node_ids,"style_key":key,"changed":changed}))
+}
+
+fn detach_style<H: Host>(host: &mut H, a: DetachStyleArgs) -> Result<Value, String> {
+    let nodes = target_nodes(host, &a.node_ids)?;
+    if let Some(property) = a.property.as_deref() {
+        if !["fill", "stroke", "text", "effect", "grid"].contains(&property) {
+            return Err("property must be fill, stroke, text, effect, or grid".into());
+        }
+    }
+    let mut updates = Vec::new();
+    for id in &nodes {
+        let mut n = node(host, id.0)?.clone();
+        let changed = match a.property.as_deref() {
+            Some(property) => n.style_refs.remove(property).is_some(),
+            None => {
+                !n.style_refs.is_empty() && {
+                    n.style_refs.clear();
+                    true
+                }
+            }
+        };
+        if changed {
+            updates.push(Command::Update { node: Box::new(n) });
+        }
+    }
+    let changed = !updates.is_empty();
+    if changed {
+        host.exec(Command::Batch(updates))?;
+    }
+    Ok(json!({"node_ids":a.node_ids,"property":a.property,"changed":changed}))
+}
+
 fn variable_kind(field: &str) -> Result<VariableKind, String> {
     match field {
         "color" => Ok(VariableKind::Color),
@@ -1038,7 +1250,7 @@ fn set_variable_value<H: Host>(host: &mut H, a: SetVariableValueArgs) -> Result<
 }
 
 /// Validate a variable-tool node list: non-empty, bounded, existing, non-page, deduplicated.
-fn variable_nodes<H: Host>(host: &H, ids: &[u64]) -> Result<Vec<NodeId>, String> {
+fn target_nodes<H: Host>(host: &H, ids: &[u64]) -> Result<Vec<NodeId>, String> {
     if ids.is_empty() {
         return Err("node_ids must contain at least one node".into());
     }
@@ -1049,7 +1261,7 @@ fn variable_nodes<H: Host>(host: &H, ids: &[u64]) -> Result<Vec<NodeId>, String>
     for id in ids {
         let n = node(host, *id)?;
         if n.parent.is_none() {
-            return Err("page roots cannot be targeted by variable tools".into());
+            return Err("page roots cannot be targeted by this tool".into());
         }
         if !out.contains(&n.id) {
             out.push(n.id);
@@ -1059,7 +1271,7 @@ fn variable_nodes<H: Host>(host: &H, ids: &[u64]) -> Result<Vec<NodeId>, String>
 }
 
 fn bind_variable<H: Host>(host: &mut H, a: BindVariableArgs) -> Result<Value, String> {
-    let nodes = variable_nodes(host, &a.node_ids)?;
+    let nodes = target_nodes(host, &a.node_ids)?;
     let expected = desigma_doc::property_kind(&a.property).ok_or_else(|| format!("unknown variable property '{}'", a.property))?;
     let (kind, scopes) =
         host.doc().variables.get(&a.variable_id).map(|v| (v.kind, v.scopes.clone())).ok_or_else(|| format!("variable {} not found", a.variable_id))?;
@@ -1093,7 +1305,7 @@ fn bind_variable<H: Host>(host: &mut H, a: BindVariableArgs) -> Result<Value, St
 }
 
 fn detach_variable<H: Host>(host: &mut H, a: DetachVariableArgs) -> Result<Value, String> {
-    let nodes = variable_nodes(host, &a.node_ids)?;
+    let nodes = target_nodes(host, &a.node_ids)?;
     if desigma_doc::property_kind(&a.property).is_none() {
         return Err(format!("unknown variable property '{}'", a.property));
     }
@@ -1115,7 +1327,7 @@ fn detach_variable<H: Host>(host: &mut H, a: DetachVariableArgs) -> Result<Value
 }
 
 fn set_variable_mode<H: Host>(host: &mut H, a: SetVariableModeArgs) -> Result<Value, String> {
-    let nodes = variable_nodes(host, &a.node_ids)?;
+    let nodes = target_nodes(host, &a.node_ids)?;
     let store = VariableStore::from_doc(host.doc());
     if !store.collections.contains_key(&a.collection_id) {
         return Err(format!("variable collection {} not found", a.collection_id));
@@ -1709,6 +1921,36 @@ struct AppearanceArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CreateStyleArgs {
+    name: String,
+    /// fill | stroke | text
+    kind: String,
+    description: Option<String>,
+    /// Required for fill/stroke.
+    color: Option<String>,
+    /// Paint opacity for fill/stroke; defaults to 1.
+    opacity: Option<f32>,
+    /// Required for text: typography fields (font_size, font_weight, font_family, line_height, letter_spacing, align_h, align_v).
+    text: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplyStyleArgs {
+    node_ids: Vec<u64>,
+    style: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DetachStyleArgs {
+    node_ids: Vec<u64>,
+    /// fill | stroke | text | effect | grid; omit to clear every style reference.
+    property: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TextStyleArgs {
     node_id: u64,
     text: Option<String>,
@@ -2072,6 +2314,30 @@ pub fn tools() -> Vec<Value> {
         "Set one layer's auto-layout child sizing. The parent must use auto layout. Sizing is fixed, hug, or fill; min/max are px and min must not exceed max. Supports undo as one step; changes remain in memory until saved.",
         json!({"node_id":id,"horizontal":{"type":"string","enum":["fixed","hug","fill"]},"vertical":{"type":"string","enum":["fixed","hug","fill"]},"grow":{"type":"number","minimum":0,"maximum":1000},"min_w":{"type":"number","minimum":0,"maximum":1000000},"max_w":{"type":"number","minimum":0,"maximum":1000000},"min_h":{"type":"number","minimum":0,"maximum":1000000},"max_h":{"type":"number","minimum":0,"maximum":1000000},"absolute":{"type":"boolean"}}),
         vec!["node_id"],
+        false,
+        true,
+    );
+    add(
+        "create_style",
+        "Create a shared fill, stroke, or text style. fill/stroke need color and optional opacity; text needs a text object with font_size, font_weight, font_family, line_height, letter_spacing, align_h, align_v. Returns the generated style key. Supports undo; changes remain in memory until saved.",
+        json!({"name":{"type":"string","minLength":1,"maxLength":1024},"kind":{"type":"string","enum":["fill","stroke","text"]},"description":{"type":"string","maxLength":100000},"color":{"type":"string","maxLength":9},"opacity":{"type":"number","minimum":0,"maximum":1},"text":{"type":"object","additionalProperties":false,"properties":{"font_size":{"type":"number","minimum":1,"maximum":1000},"font_weight":{"type":"integer","minimum":100,"maximum":900,"multipleOf":100},"font_family":{"type":"string","maxLength":256},"line_height":{"type":"number","minimum":0,"maximum":1000},"letter_spacing":{"type":"number","minimum":-100,"maximum":100},"align_h":{"type":"string","enum":["left","center","right","justified"]},"align_v":{"type":"string","enum":["top","center","bottom"]}}}}),
+        vec!["name", "kind"],
+        false,
+        false,
+    );
+    add(
+        "apply_style",
+        "Apply a shared fill, stroke, or text style to 1-500 non-page layers and record the style reference. Text styles require text layers. Supports undo as one step; changes remain in memory until saved.",
+        json!({"node_ids":node_ids,"style":{"type":"string","minLength":1,"maxLength":1024}}),
+        vec!["node_ids", "style"],
+        false,
+        true,
+    );
+    add(
+        "detach_style",
+        "Remove shared-style references from 1-500 non-page layers, keeping their current values. Omit property to clear every reference. Supports undo as one step; changes remain in memory until saved.",
+        json!({"node_ids":node_ids,"property":{"type":"string","enum":["fill","stroke","text","effect","grid"]}}),
+        vec!["node_ids"],
         false,
         true,
     );
@@ -2945,5 +3211,93 @@ mod tests {
         let t = tools().into_iter().find(|t| t["name"] == "desigma_export_image").unwrap();
         assert_eq!(t["annotations"]["readOnlyHint"], false);
         assert_eq!(t["annotations"]["idempotentHint"], true);
+    }
+
+    #[test]
+    fn shared_styles_create_apply_detach_and_undo() {
+        let mut e = Engine::default();
+        let rect = create(&mut e, "rectangle", "Card");
+        let text = create(&mut e, "text", "Title");
+
+        let fill = e.call("desigma_create_style", json!({"name":"Color/Brand","kind":"fill","color":"#2F5BFF","opacity":0.8})).unwrap();
+        let fill_key = fill["style_key"].as_str().unwrap().to_string();
+        assert_eq!(e.doc.style_meta[&fill_key].property, StyleProperty::Fill);
+        assert!(matches!(e.doc.styles[&fill_key], Style::Fill(_)));
+
+        e.call("desigma_apply_style", json!({"node_ids":[rect,text],"style":fill_key})).unwrap();
+        let rn = e.doc.get(NodeId(rect)).unwrap();
+        assert_eq!(rn.style_refs.get("fill").map(String::as_str), Some(fill_key.as_str()));
+        assert_eq!(rn.fills[0].kind, desigma_doc::PaintKind::Solid(Color::from_hex("#2F5BFF").unwrap()));
+        assert_eq!(rn.fills[0].opacity, 0.8);
+        let tn = e.doc.get(NodeId(text)).unwrap();
+        assert_eq!(tn.style_refs.get("fill").map(String::as_str), Some(fill_key.as_str()));
+
+        e.call("desigma_detach_style", json!({"node_ids":[rect,text],"property":"fill"})).unwrap();
+        assert!(!e.doc.get(NodeId(rect)).unwrap().style_refs.contains_key("fill"));
+        assert_eq!(e.doc.get(NodeId(rect)).unwrap().fills[0].kind, desigma_doc::PaintKind::Solid(Color::from_hex("#2F5BFF").unwrap()));
+        e.call("desigma_undo", json!({})).unwrap();
+        assert_eq!(e.doc.get(NodeId(rect)).unwrap().style_refs.get("fill").map(String::as_str), Some(fill_key.as_str()));
+
+        let text_style = e
+            .call(
+                "desigma_create_style",
+                json!({"name":"Type/Headline","kind":"text","text":{"font_size":28,"font_weight":700,"line_height":34,"align_h":"center"}}),
+            )
+            .unwrap();
+        let text_key = text_style["style_key"].as_str().unwrap().to_string();
+        e.call("desigma_apply_style", json!({"node_ids":[text],"style":text_key})).unwrap();
+        let tn = e.doc.get(NodeId(text)).unwrap();
+        assert_eq!(tn.style_refs.get("text").map(String::as_str), Some(text_key.as_str()));
+        assert_eq!(tn.kind.any_text().unwrap().style.font_size, 28.0);
+        assert_eq!(tn.kind.any_text().unwrap().style.font_weight, 700);
+        e.call("desigma_undo", json!({})).unwrap();
+        assert!(!e.doc.get(NodeId(text)).unwrap().style_refs.contains_key("text"));
+
+        let stroke = e.call("desigma_create_style", json!({"name":"Stroke/Line","kind":"stroke","color":"#101828"})).unwrap();
+        let stroke_key = stroke["style_key"].as_str().unwrap().to_string();
+        e.call("desigma_apply_style", json!({"node_ids":[rect],"style":stroke_key})).unwrap();
+        let rn = e.doc.get(NodeId(rect)).unwrap();
+        assert_eq!(rn.style_refs.get("stroke").map(String::as_str), Some(stroke_key.as_str()));
+        assert_eq!(rn.stroke.paints[0].kind, desigma_doc::PaintKind::Solid(Color::from_hex("#101828").unwrap()));
+    }
+
+    #[test]
+    fn shared_styles_reject_invalid_input_atomically() {
+        let mut e = Engine::default();
+        let rect = create(&mut e, "rectangle", "Card");
+        let text_style = e.call("desigma_create_style", json!({"name":"Type/Body","kind":"text","text":{"font_size":15}})).unwrap();
+        let text_key = text_style["style_key"].as_str().unwrap().to_string();
+        e.doc.styles.insert("Effect/Glow".into(), Style::Effect(vec![]));
+        let before = e.doc.to_json().unwrap();
+        for (name, args) in [
+            ("desigma_create_style", json!({"name":"Bad","kind":"fill"})),
+            ("desigma_create_style", json!({"name":"Bad","kind":"fill","color":"not-a-color"})),
+            ("desigma_create_style", json!({"name":"Bad","kind":"fill","color":"#ffffff","opacity":2})),
+            ("desigma_create_style", json!({"name":"Bad","kind":"glow"})),
+            ("desigma_create_style", json!({"name":"Bad","kind":"text","color":"#ffffff","text":{"font_size":15}})),
+            ("desigma_create_style", json!({"name":"Bad","kind":"text"})),
+            ("desigma_create_style", json!({"name":"Bad","kind":"text","text":{"font_size":15,"extra":true}})),
+            ("desigma_apply_style", json!({"node_ids":[rect],"style":"missing"})),
+            ("desigma_apply_style", json!({"node_ids":[rect],"style":text_key})),
+            ("desigma_apply_style", json!({"node_ids":[1],"style":text_key})),
+            ("desigma_apply_style", json!({"node_ids":[],"style":text_key})),
+            ("desigma_apply_style", json!({"node_ids":[rect],"style":"Effect/Glow"})),
+            ("desigma_detach_style", json!({"node_ids":[rect],"property":"banana"})),
+            ("desigma_detach_style", json!({"node_ids":[],"property":"fill"})),
+        ] {
+            let err = e.call(name, args).unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+            assert_eq!(e.doc.to_json().unwrap(), before, "{name} changed the document");
+        }
+    }
+
+    #[test]
+    fn style_tools_are_registered_as_writing_tools() {
+        for name in ["desigma_create_style", "desigma_apply_style", "desigma_detach_style"] {
+            let t = tools().into_iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("missing {name}"));
+            assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
+        }
+        let apply = tools().into_iter().find(|t| t["name"] == "desigma_apply_style").unwrap();
+        assert_eq!(apply["inputSchema"]["required"], json!(["node_ids", "style"]));
     }
 }

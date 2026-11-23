@@ -104,6 +104,9 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_move_node` | Reparent a layer into another container, optionally at an index, keeping its parent-relative transform. |
 | `desigma_import_svg` | Import SVG markup as a frame with real child layers; bitmap bytes become document assets. |
 | `desigma_set_effects` | Replace a non-page layer's effects: drop/inner shadow, layer blur, or background blur; an empty array clears. |
+| `desigma_create_style` | Create a shared fill, stroke, or text style; returns its style key. |
+| `desigma_apply_style` | Apply a shared style to 1–500 layers and record the reference. |
+| `desigma_detach_style` | Remove shared-style references from 1–500 layers, keeping current values. |
 | `desigma_batch` | Apply 1–100 node edits as one undo step. Later operations reference node IDs from earlier ones with `$INDEX` in `node_id`, `parent_id`, or `node_ids`. |
 | `desigma_set_auto_layout` | Create, update, or remove auto layout on a frame, component, or instance. |
 | `desigma_set_layout_child` | Set a layer's auto-layout sizing, grow, min/max, or absolute behavior. |
