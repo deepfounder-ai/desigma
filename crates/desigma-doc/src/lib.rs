@@ -71,6 +71,8 @@ pub enum DocError {
     NotAContainer(NodeId),
     #[error("invalid animation edit: {0}")]
     InvalidMotion(&'static str),
+    #[error("invalid component edit: {0}")]
+    InvalidComponent(String),
 }
 
 /// A whole file: pages at the root, each page a tree of nodes.

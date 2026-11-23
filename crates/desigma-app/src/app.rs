@@ -77,6 +77,25 @@ pub enum MenuKind {
     Palette,
 }
 
+/// What the inline variant editor is editing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VariantEditKind {
+    /// Duplicate `source` into `set`.
+    AddCopy { set: NodeId, source: NodeId },
+    /// Move `source` into the chosen set.
+    AddMove { source: NodeId, set: Option<NodeId> },
+    /// Rename an existing variant.
+    Rename { variant: NodeId },
+}
+
+/// Inline editor for a variant's property values.
+#[derive(Clone, Debug)]
+pub struct VariantEdit {
+    pub kind: VariantEditKind,
+    pub values: Vec<(String, String)>,
+    pub error: Option<String>,
+}
+
 #[derive(Default)]
 pub struct UiState {
     pub menu: Option<MenuKind>,
@@ -90,6 +109,8 @@ pub struct UiState {
     /// Anchor of the instance "more" menu and of the add-property menu in the inspector.
     pub inst_menu: Option<egui::Rect>,
     pub prop_menu: Option<egui::Rect>,
+    /// Inline add/rename variant editor.
+    pub variant_edit: Option<VariantEdit>,
     /// Command palette query and highlighted row.
     pub palette_query: String,
     pub palette_sel: usize,

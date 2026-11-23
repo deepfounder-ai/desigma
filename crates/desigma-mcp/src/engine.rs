@@ -1,13 +1,15 @@
 //! Typed, local document operations shared by the MCP transport and future bridges.
 use base64::Engine as _;
 use desigma_doc::{
-    AutoLayout, Color, Command, Document, Effect, History, ImageScaleMode, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind, Paint, PaintKind,
-    Rect, Sizing, Style, StyleMeta, StyleProperty, TextAlignH, TextAlignV, TextAutoResize, TextStyle, VariableKind, VariableStore, VariableValue, Vec2,
+    AddVariantMode, AutoLayout, Color, Command, Document, Effect, History, ImageScaleMode, LayoutAlign, LayoutDirection, LineHeight, Node, NodeId, NodeKind,
+    OverrideField, Paint, PaintKind, PropKind, PropValue, Rect, Sizing, Style, StyleMeta, StyleProperty, TextAlignH, TextAlignV, TextAutoResize, TextStyle,
+    VariableKind, VariableStore, VariableValue, Vec2,
 };
 use desigma_svg::ImportOptions;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct Engine {
     pub doc: Document,
@@ -176,6 +178,15 @@ pub const EDIT_TOOLS: &[&str] = &[
     "desigma_create_instance",
     "desigma_detach_instance",
     "desigma_sync_instances",
+    "desigma_combine_as_variants",
+    "desigma_add_variant",
+    "desigma_remove_variant",
+    "desigma_rename_variant",
+    "desigma_add_component_property",
+    "desigma_update_component_property",
+    "desigma_delete_component_property",
+    "desigma_bind_component_property",
+    "desigma_set_instance_property",
     "desigma_rename_page",
     "desigma_undo",
     "desigma_redo",
@@ -389,6 +400,138 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             host.exec_derived(cmd)?;
             Ok(json!({"component_id":a.component_id,"synced":true,"changed":true}))
         }
+        "desigma_combine_as_variants" => {
+            let a: CombineVariantsArgs = parse(args)?;
+            if a.component_ids.is_empty() || a.component_ids.len() > 100 {
+                return Err("component_ids must contain between 1 and 100 components".into());
+            }
+            if let Some(name) = &a.name {
+                bounded_text("name", name, 1024)?;
+                if name.trim().is_empty() {
+                    return Err("name must not be empty".into());
+                }
+            }
+            let mut seen = BTreeSet::new();
+            for id in &a.component_ids {
+                if !seen.insert(*id) {
+                    return Err(format!("component {id} appears more than once"));
+                }
+                let n = node(host, *id)?;
+                if !matches!(n.kind, NodeKind::Component(_)) {
+                    return Err(format!("node {id} is not a main component; create one first"));
+                }
+                if n.component.source.is_some() {
+                    return Err(format!("node {id} is a mirrored layer inside an instance"));
+                }
+            }
+            let ids: Vec<NodeId> = a.component_ids.iter().map(|id| NodeId(*id)).collect();
+            let cmd = desigma_doc::combine_as_variants_with_name(host.doc_mut(), &ids, a.name.as_deref());
+            if is_noop(&cmd) {
+                return Err("components could not be combined; they must be main components with a parent".into());
+            }
+            host.exec_derived(cmd)?;
+            let set_id = host.doc().get(ids[0]).and_then(|n| n.parent).ok_or("component set was not created")?;
+            let properties = host.doc().get(set_id).map(|n| n.component.props.clone()).unwrap_or_default();
+            Ok(json!({"set_id":set_id.0,"variant_ids":a.component_ids,"properties":properties}))
+        }
+        "desigma_add_variant" => {
+            let a: AddVariantArgs = parse(args)?;
+            let mode = match a.mode.as_str() {
+                "copy" => AddVariantMode::Copy,
+                "move" => AddVariantMode::Move,
+                other => return Err(format!("mode must be copy or move, got {other}")),
+            };
+            let values: Vec<(String, String)> = a.values.into_iter().collect();
+            let set = NodeId(a.set_id);
+            let cmd = desigma_doc::add_variant(host.doc_mut(), set, NodeId(a.source_id), mode, &values).map_err(|e| e.to_string())?;
+            host.exec_derived(cmd)?;
+            let variant_id = find_variant(host.doc(), set, &values).ok_or("variant was not created")?;
+            let properties = host.doc().get(set).map(|n| n.component.props.clone()).unwrap_or_default();
+            let name = host.doc().get(variant_id).map(|n| n.name.clone()).unwrap_or_default();
+            Ok(json!({"variant_id":variant_id.0,"name":name,"properties":properties,"changed":true}))
+        }
+        "desigma_remove_variant" => {
+            let a: VariantIdArgs = parse(args)?;
+            let variant = node(host, a.variant_id)?.clone();
+            let set = variant.parent.ok_or("variant has no component set")?;
+            let cmd = desigma_doc::remove_variant(host.doc_mut(), variant.id).map_err(|e| e.to_string())?;
+            host.exec_derived(cmd)?;
+            let properties = host.doc().get(set).map(|n| n.component.props.clone()).unwrap_or_default();
+            Ok(json!({"set_id":set.0,"removed":true,"properties":properties,"changed":true}))
+        }
+        "desigma_rename_variant" => {
+            let a: RenameVariantArgs = parse(args)?;
+            let values: Vec<(String, String)> = a.values.into_iter().collect();
+            let cmd = desigma_doc::rename_variant(host.doc_mut(), NodeId(a.variant_id), &values).map_err(|e| e.to_string())?;
+            host.exec_derived(cmd)?;
+            let variant = node(host, a.variant_id)?.clone();
+            let set = variant.parent.ok_or("variant has no component set")?;
+            let properties = host.doc().get(set).map(|n| n.component.props.clone()).unwrap_or_default();
+            Ok(json!({"variant_id":a.variant_id,"name":variant.name,"properties":properties,"changed":true}))
+        }
+        "desigma_add_component_property" => {
+            let a: AddComponentPropertyArgs = parse(args)?;
+            let has_preferred = a.preferred.as_ref().is_some_and(|preferred| !preferred.is_empty());
+            let preferred = a.preferred.unwrap_or_default();
+            let kind = component_prop_kind(&a.kind, preferred)?;
+            if !matches!(kind, PropKind::InstanceSwap { .. }) && has_preferred {
+                return Err("preferred is only valid for instance_swap properties".into());
+            }
+            let default = component_prop_default(&kind, a.default.as_ref())?;
+            let cmd = desigma_doc::add_component_property(host.doc_mut(), NodeId(a.owner_id), &a.name, kind, default).map_err(|e| e.to_string())?;
+            host.exec_derived(cmd)?;
+            let def = property_def(host.doc(), NodeId(a.owner_id), a.name.trim())?;
+            Ok(json!({"owner_id":a.owner_id,"property":def}))
+        }
+        "desigma_update_component_property" => {
+            let a: UpdateComponentPropertyArgs = parse(args)?;
+            let owner = NodeId(a.owner_id);
+            let def = property_def(host.doc(), owner, &a.name)?;
+            let default = match a.default {
+                Some(value) => Some(component_prop_default(&def.kind, Some(&value))?),
+                None => None,
+            };
+            let cmd = desigma_doc::update_component_property(host.doc_mut(), owner, &a.name, a.new_name.as_deref(), default).map_err(|e| e.to_string())?;
+            let changed = !is_noop(&cmd);
+            if changed {
+                host.exec_derived(cmd)?;
+            }
+            let name = a.new_name.as_deref().map(str::trim).filter(|name| !name.is_empty()).unwrap_or(&a.name);
+            let def = property_def(host.doc(), owner, name)?;
+            Ok(json!({"owner_id":a.owner_id,"property":def,"changed":changed}))
+        }
+        "desigma_delete_component_property" => {
+            let a: DeleteComponentPropertyArgs = parse(args)?;
+            let cmd = desigma_doc::delete_component_property(host.doc_mut(), NodeId(a.owner_id), &a.name).map_err(|e| e.to_string())?;
+            host.exec_derived(cmd)?;
+            Ok(json!({"owner_id":a.owner_id,"deleted":true,"changed":true}))
+        }
+        "desigma_bind_component_property" => {
+            let a: BindComponentPropertyArgs = parse(args)?;
+            let field = property_field(&a.field)?;
+            let cmd = desigma_doc::bind_component_property(host.doc_mut(), NodeId(a.node_id), field, a.property.as_deref()).map_err(|e| e.to_string())?;
+            host.exec_derived(cmd)?;
+            Ok(json!({"node_id":a.node_id,"field":a.field,"property":a.property,"changed":true}))
+        }
+        "desigma_set_instance_property" => {
+            let a: SetInstancePropertyArgs = parse(args)?;
+            let target = node(host, a.node_id)?;
+            if !matches!(target.kind, NodeKind::Instance { .. }) {
+                return Err("target is not an instance".into());
+            }
+            let component = desigma_doc::instance_component(target).ok_or("instance has no main component")?;
+            let def = property_def(host.doc(), component, &a.name)?;
+            let value = match a.value {
+                Some(value) if !value.is_null() => Some(component_prop_value(host.doc(), &def.kind, &value)?),
+                _ => None,
+            };
+            let cmd = desigma_doc::set_instance_property(host.doc_mut(), NodeId(a.node_id), &a.name, value.clone()).map_err(|e| e.to_string())?;
+            let changed = !is_noop(&cmd);
+            if changed {
+                host.exec_derived(cmd)?;
+            }
+            Ok(json!({"node_id":a.node_id,"name":a.name,"value":value,"changed":changed}))
+        }
         "desigma_rename_page" => {
             let a: RenamePageArgs = parse(args)?;
             let name = a.name.trim();
@@ -457,6 +600,78 @@ fn node<H: Host>(host: &H, id: u64) -> Result<&Node, String> {
         return Err("node IDs must be positive integers".into());
     }
     host.doc().get(NodeId(id)).ok_or_else(|| format!("node {id} not found"))
+}
+
+fn component_prop_kind(kind: &str, preferred: Vec<u64>) -> Result<PropKind, String> {
+    match kind {
+        "boolean" => Ok(PropKind::Boolean),
+        "text" => Ok(PropKind::Text),
+        "instance_swap" => Ok(PropKind::InstanceSwap { preferred: preferred.into_iter().map(NodeId).collect() }),
+        "variant" => Err("variant properties are derived; add or rename a variant instead".into()),
+        other => Err(format!("kind must be boolean, text, or instance_swap, got {other}")),
+    }
+}
+
+fn component_prop_default(kind: &PropKind, value: Option<&Value>) -> Result<PropValue, String> {
+    match (kind, value) {
+        (PropKind::Boolean, None) => Ok(PropValue::Bool(false)),
+        (PropKind::Boolean, Some(Value::Bool(value))) => Ok(PropValue::Bool(*value)),
+        (PropKind::Boolean, Some(_)) => Err("boolean default must be true or false".into()),
+        (PropKind::Text, None) => Ok(PropValue::Text(String::new())),
+        (PropKind::Text, Some(Value::String(value))) => Ok(PropValue::Text(value.clone())),
+        (PropKind::Text, Some(_)) => Err("text default must be a string".into()),
+        (PropKind::InstanceSwap { .. }, Some(Value::Number(value))) => {
+            let id = value.as_u64().ok_or("instance_swap default must be a component id")?;
+            Ok(PropValue::Instance(NodeId(id)))
+        }
+        (PropKind::InstanceSwap { .. }, _) => Err("instance_swap default must be a component id".into()),
+        (PropKind::Variant { .. }, _) => Err("variant properties are derived; add or rename a variant instead".into()),
+    }
+}
+
+fn component_prop_value(doc: &Document, kind: &PropKind, value: &Value) -> Result<PropValue, String> {
+    match kind {
+        PropKind::Boolean => value.as_bool().map(PropValue::Bool).ok_or_else(|| "value must be a boolean".into()),
+        PropKind::Text => value.as_str().map(|text| PropValue::Text(text.into())).ok_or_else(|| "value must be a string".into()),
+        PropKind::Variant { options } => {
+            let option = value.as_str().ok_or("variant value must be a string")?;
+            if !options.iter().any(|candidate| candidate == option) {
+                return Err(format!("variant option '{option}' does not exist"));
+            }
+            Ok(PropValue::Variant(option.into()))
+        }
+        PropKind::InstanceSwap { .. } => {
+            let id = value.as_u64().ok_or("instance-swap value must be a component id")?;
+            if !matches!(doc.get(NodeId(id)).map(|node| &node.kind), Some(NodeKind::Component(_))) {
+                return Err("instance-swap value must be a main component".into());
+            }
+            Ok(PropValue::Instance(NodeId(id)))
+        }
+    }
+}
+
+fn property_def(doc: &Document, owner: NodeId, name: &str) -> Result<desigma_doc::ComponentPropDef, String> {
+    desigma_doc::prop_defs(doc, owner).into_iter().find(|def| def.name == name).ok_or_else(|| format!("component property '{name}' not found"))
+}
+
+fn property_field(field: &str) -> Result<OverrideField, String> {
+    match field {
+        "visible" => Ok(OverrideField::Visible),
+        "characters" => Ok(OverrideField::Characters),
+        "main_component" => Ok(OverrideField::MainComponent),
+        other => Err(format!("field must be visible, characters, or main_component, got {other}")),
+    }
+}
+
+/// Finds a variant in `set` whose property values match `values` exactly.
+fn find_variant(doc: &Document, set: NodeId, values: &[(String, String)]) -> Option<NodeId> {
+    let wanted: BTreeMap<_, _> = values.iter().cloned().collect();
+    desigma_doc::components_of(doc, set).into_iter().find(|id| {
+        doc.get(*id).is_some_and(|node| {
+            let actual: BTreeMap<_, _> = desigma_doc::parse_variant_name(&node.name).into_iter().collect();
+            actual == wanted
+        })
+    })
 }
 
 /// Renders one layer to PNG bytes. Shared by the MCP session (which writes the
@@ -615,6 +830,12 @@ fn update<H: Host>(host: &mut H, a: UpdateArgs) -> Result<Value, String> {
     }
     if let Some(name) = a.name {
         bounded_text("name", &name, 1024)?;
+        if name != node.name
+            && matches!(&node.kind, NodeKind::Component(_))
+            && node.parent.and_then(|parent| host.doc().get(parent)).is_some_and(|parent| matches!(parent.kind, NodeKind::ComponentSet(_)))
+        {
+            return Err("variant names must be changed with desigma_rename_variant".into());
+        }
         node.name = name;
     }
     if let Some(x) = a.x {
@@ -2199,6 +2420,77 @@ struct SyncArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CombineVariantsArgs {
+    component_ids: Vec<u64>,
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddVariantArgs {
+    set_id: u64,
+    source_id: u64,
+    mode: String,
+    values: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VariantIdArgs {
+    variant_id: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenameVariantArgs {
+    variant_id: u64,
+    values: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddComponentPropertyArgs {
+    owner_id: u64,
+    name: String,
+    kind: String,
+    default: Option<Value>,
+    preferred: Option<Vec<u64>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateComponentPropertyArgs {
+    owner_id: u64,
+    name: String,
+    new_name: Option<String>,
+    default: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteComponentPropertyArgs {
+    owner_id: u64,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BindComponentPropertyArgs {
+    node_id: u64,
+    field: String,
+    property: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetInstancePropertyArgs {
+    node_id: u64,
+    name: String,
+    value: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RenamePageArgs {
     page_id: u64,
     name: String,
@@ -2546,6 +2838,78 @@ pub fn tools() -> Vec<Value> {
         "Re-apply a main component's current state to every instance of it (needed after editing a component in a way that does not sync, e.g. set_appearance). Supports undo; changes remain in memory until saved.",
         json!({"component_id":id}),
         vec!["component_id"],
+        false,
+        true,
+    );
+    add(
+        "combine_as_variants",
+        "Create a component set from 1-100 existing main components. Frames, groups and sections must first become components with create_component. Optional name sets the set name. If the components come from different containers they are reparented under the first component's parent. Supports undo as one step; changes remain in memory until saved.",
+        json!({"component_ids":{"type":"array","minItems":1,"maxItems":100,"items":id},"name":{"type":"string","minLength":1,"maxLength":1024}}),
+        vec!["component_ids"],
+        false,
+        false,
+    );
+    add(
+        "add_variant",
+        "Add a variant to an existing component set. mode=copy duplicates source_id and leaves the source and its instances alone; mode=move reparents a standalone main component into the set. values must contain every variant property of the set; a new value adds an option. The set is relaid out and its instances are synchronized. Supports undo as one step; changes remain in memory until saved.",
+        json!({"set_id":id,"source_id":id,"mode":{"type":"string","enum":["copy","move"]},"values":{"type":"object","additionalProperties":{"type":"string"},"minProperties":1,"maxProperties":32}}),
+        vec!["set_id", "source_id", "mode", "values"],
+        false,
+        false,
+    );
+    add(
+        "remove_variant",
+        "Remove an unused variant from its component set. Refuses when any instance points at the variant or when it is the last variant. Unused options and a removed default are pruned, and the set is relaid out. Supports undo as one step; changes remain in memory until saved.",
+        json!({"variant_id":id}),
+        vec!["variant_id"],
+        false,
+        false,
+    );
+    add(
+        "rename_variant",
+        "Rename a variant by replacing its complete map of variant property values. Updates the component name, the set's options and default, and explicit instance selections in the same undo step. A value collision with another variant is refused. Changes remain in memory until saved.",
+        json!({"variant_id":id,"values":{"type":"object","additionalProperties":{"type":"string"},"minProperties":1,"maxProperties":32}}),
+        vec!["variant_id", "values"],
+        false,
+        false,
+    );
+    add(
+        "add_component_property",
+        "Add a Boolean, Text, or Instance Swap component property to a main component or component set. Instance Swap needs a default component id and may list preferred component ids. Variant properties are derived and refused. Supports undo; changes remain in memory until saved.",
+        json!({"owner_id":id,"name":{"type":"string","minLength":1,"maxLength":1024},"kind":{"type":"string","enum":["boolean","text","instance_swap"]},"default":{"type":["boolean","string","integer"]},"preferred":{"type":"array","items":id,"maxItems":100}}),
+        vec!["owner_id", "name", "kind"],
+        false,
+        false,
+    );
+    add(
+        "update_component_property",
+        "Rename a Boolean, Text, or Instance Swap property and/or change its default. The kind is immutable and Variant properties are refused. Renaming updates bindings and instance values; a default change synchronizes instances without an explicit value. Supports undo as one step; changes remain in memory until saved.",
+        json!({"owner_id":id,"name":{"type":"string","minLength":1,"maxLength":1024},"new_name":{"type":"string","minLength":1,"maxLength":1024},"default":{"type":["boolean","string","integer"]}}),
+        vec!["owner_id", "name"],
+        false,
+        true,
+    );
+    add(
+        "delete_component_property",
+        "Delete a Boolean, Text, or Instance Swap property, its bindings, and its instance values. Variant properties are refused. Supports undo as one step; changes remain in memory until saved.",
+        json!({"owner_id":id,"name":{"type":"string","minLength":1,"maxLength":1024}}),
+        vec!["owner_id", "name"],
+        false,
+        false,
+    );
+    add(
+        "bind_component_property",
+        "Bind a layer inside a main component to a component property, or unbind when property is omitted. Boolean maps to visible, Text to characters, and Instance Swap to main_component. Supports undo as one step; changes remain in memory until saved.",
+        json!({"node_id":id,"field":{"type":"string","enum":["visible","characters","main_component"]},"property":{"type":"string","minLength":1,"maxLength":1024}}),
+        vec!["node_id", "field"],
+        false,
+        true,
+    );
+    add(
+        "set_instance_property",
+        "Set a component property value on an instance: boolean, text, variant option, or swapped component id. Omit value or pass null to return to the default. The property must exist and the value must match its kind. Supports undo as one step; changes remain in memory until saved.",
+        json!({"node_id":id,"name":{"type":"string","minLength":1,"maxLength":1024},"value":{"type":["boolean","string","integer","null"]}}),
+        vec!["node_id", "name"],
         false,
         true,
     );

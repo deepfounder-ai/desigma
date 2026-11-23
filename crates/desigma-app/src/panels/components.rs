@@ -16,6 +16,7 @@ use egui::{Align2, Pos2, Rect, Sense, Ui, Vec2};
 /// below the name header. Each section ends with a separator.
 pub(super) fn sections(app: &mut App, ui: &mut Ui, pane: &mut Pane, id: NodeId) {
     let Some(n) = app.doc.get(id).cloned() else { return };
+    variant_editor(app, ui, pane);
     match &n.kind {
         NodeKind::Instance { .. } if is_top_instance(&n) => {
             instance_header(app, ui, pane, id);
@@ -254,7 +255,141 @@ fn kind_label(k: &PropKind) -> &'static str {
     }
 }
 
+/// All component sets in the document, ordered by name, for the move-to-set picker.
+fn all_sets(doc: &Document) -> Vec<NodeId> {
+    let mut sets: Vec<NodeId> = doc.nodes.values().filter(|node| matches!(node.kind, NodeKind::ComponentSet(_))).map(|node| node.id).collect();
+    sets.sort_by_key(|id| doc.get(*id).map(|node| node.name.clone()).unwrap_or_default());
+    sets
+}
+
+fn action_button(ui: &mut Ui, pane: &mut Pane, key: &str, label: &str) -> bool {
+    let rect = pane.rect(theme::SECTION_CONTENT_X, 0.0, 104.0, theme::FIELD_HEIGHT);
+    let response = ui.interact(rect, ui.id().with(key), Sense::click());
+    ui.painter().rect_filled(rect, theme::cr(theme::RADIUS_MEDIUM), if response.hovered() { theme::BG_TERTIARY } else { theme::BG_SECONDARY });
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, theme::font_body(), theme::TEXT);
+    pane.y += theme::FIELD_HEIGHT + 4.0;
+    response.clicked()
+}
+
+/// Variant lifecycle controls for a component set, a variant, or a standalone component.
+fn variant_section(app: &mut App, ui: &mut Ui, pane: &mut Pane, id: NodeId) {
+    let Some(node) = app.doc.get(id).cloned() else { return };
+    match &node.kind {
+        NodeKind::ComponentSet(_) => {
+            let variants = components_of(&app.doc, id);
+            let add = title(ui, pane, "Variants", Some(Icon::Plus), variants.is_empty());
+            if add {
+                if let Some(first) = variants.first().copied() {
+                    app.open_add_variant_copy(id, first);
+                }
+            }
+            for variant in variants {
+                let Some(child) = app.doc.get(variant) else { continue };
+                let row = pane.rect(theme::SECTION_CONTENT_X, 0.0, theme::SECTION_CONTENT_W - 28.0, theme::FIELD_HEIGHT);
+                let resp = ui.interact(row, ui.id().with(("variant-row", variant.0)), Sense::click());
+                if resp.clicked() {
+                    app.selection = vec![variant];
+                }
+                let selected = app.selection == [variant];
+                ui.painter().text(
+                    Pos2::new(row.left(), row.center().y),
+                    Align2::LEFT_CENTER,
+                    &child.name,
+                    theme::font_body(),
+                    if selected { theme::TEXT } else { theme::TEXT_SECONDARY },
+                );
+                let minus = pane.rect(theme::SECTION_TRAILING_X, 0.0, theme::PANEL_ACTION_BUTTON, theme::PANEL_ACTION_BUTTON);
+                if widgets::icon_button(ui, minus, ("variant-remove", variant.0), Icon::Minus, false, "Remove variant").clicked() {
+                    if let Err(error) = app.remove_variant(variant) {
+                        app.show_toast(error, true);
+                    }
+                }
+                row_end(pane);
+                pane.y += 4.0;
+            }
+            section_sep(ui, pane, false);
+        }
+        NodeKind::Component(_) => {
+            let set = node.parent.filter(|parent| matches!(app.doc.get(*parent).map(|node| &node.kind), Some(NodeKind::ComponentSet(_))));
+            if set.is_some() {
+                title(ui, pane, "Variant", None, false);
+                if action_button(ui, pane, "variant-rename", "Rename variant") {
+                    app.open_rename_variant(id);
+                }
+                if action_button(ui, pane, "variant-remove", "Remove variant") {
+                    if let Err(error) = app.remove_variant(id) {
+                        app.show_toast(error, true);
+                    }
+                }
+            } else if action_button(ui, pane, "variant-move", "Add to variant set…") {
+                app.open_add_variant_move(id);
+            }
+            section_sep(ui, pane, false);
+        }
+        _ => {}
+    }
+}
+
+/// Inline editor with one field per variant property. It stays open on error.
+fn variant_editor(app: &mut App, ui: &mut Ui, pane: &mut Pane) {
+    let Some(mut edit) = app.ui.variant_edit.clone() else { return };
+    let heading = match edit.kind {
+        crate::app::VariantEditKind::AddCopy { .. } => "Add variant",
+        crate::app::VariantEditKind::AddMove { .. } => "Move component into set",
+        crate::app::VariantEditKind::Rename { .. } => "Rename variant",
+    };
+    title(ui, pane, heading, None, false);
+    if let crate::app::VariantEditKind::AddMove { set: None, .. } = edit.kind {
+        let sets = all_sets(&app.doc);
+        let names: Vec<String> = sets.iter().map(|id| app.doc.get(*id).map(|node| node.name.clone()).unwrap_or_default()).collect();
+        let current = if names.is_empty() { "No component sets" } else { "Choose a component set" };
+        if let Some(index) = dropdown(ui, pane.full(0.0), "variant-set", current, &names) {
+            if let Some(set) = sets.get(index).copied() {
+                edit.kind = crate::app::VariantEditKind::AddMove {
+                    source: match edit.kind {
+                        crate::app::VariantEditKind::AddMove { source, .. } => source,
+                        _ => unreachable!(),
+                    },
+                    set: Some(set),
+                };
+                edit.values = app.variant_defaults(set);
+            }
+        }
+        pane.y += 4.0;
+    }
+    for (name, value) in &mut edit.values {
+        let label = pane.rect(theme::SECTION_CONTENT_X, 0.0, 100.0, theme::FIELD_HEIGHT);
+        ui.painter().text(Pos2::new(label.left(), label.center().y), Align2::LEFT_CENTER, name.as_str(), theme::font_body(), theme::TEXT_SECONDARY);
+        let field_rect = pane.rect(theme::FIELD_COL_X[1], 0.0, theme::FIELD_WIDTH_HALF, theme::FIELD_HEIGHT);
+        if let Some(next) = field::text_input(ui, field_rect, ("variant-value", &*name), value) {
+            *value = next;
+        }
+        pane.y += theme::FIELD_HEIGHT + 4.0;
+    }
+    if let Some(error) = &edit.error {
+        let row = pane.rect(theme::SECTION_CONTENT_X, 0.0, theme::SECTION_CONTENT_W, theme::FIELD_HEIGHT);
+        ui.painter().text(Pos2::new(row.left(), row.center().y), Align2::LEFT_CENTER, error, theme::font_body(), theme::DANGER);
+        pane.y += theme::FIELD_HEIGHT + 4.0;
+    }
+    let submit = match edit.kind {
+        crate::app::VariantEditKind::AddCopy { .. } | crate::app::VariantEditKind::AddMove { .. } => "Add",
+        crate::app::VariantEditKind::Rename { .. } => "Rename",
+    };
+    if action_button(ui, pane, "variant-submit", submit) {
+        app.ui.variant_edit = Some(edit);
+        app.submit_variant_edit();
+        return;
+    }
+    if action_button(ui, pane, "variant-cancel", "Cancel") {
+        app.ui.variant_edit = None;
+        return;
+    }
+    app.ui.variant_edit = Some(edit);
+    section_sep(ui, pane, false);
+}
+
 fn component_props(app: &mut App, ui: &mut Ui, pane: &mut Pane, id: NodeId) {
+    variant_section(app, ui, pane, id);
     let owner = if matches!(app.doc.get(id).map(|n| &n.kind), Some(NodeKind::ComponentSet(_))) { id } else { app.prop_owner(id) };
     let defs = app.doc.get(owner).map(|n| n.component.props.clone()).unwrap_or_default();
     let plus = pane.rect(theme::SECTION_TRAILING_X, 8.0, theme::PANEL_ACTION_BUTTON, theme::PANEL_ACTION_BUTTON);
@@ -265,7 +400,9 @@ fn component_props(app: &mut App, ui: &mut Ui, pane: &mut Pane, id: NodeId) {
     for def in &defs {
         let name_r = pane.rect(theme::SECTION_CONTENT_X, 0.0, theme::SECTION_CONTENT_W - 28.0, theme::FIELD_HEIGHT);
         widgets::record(ui, &format!("propdef:{}", def.name), name_r);
-        if let Some(new) = field::text_input(ui, name_r, ("propdef", &def.name), &def.name) {
+        if matches!(def.kind, PropKind::Variant { .. }) {
+            ui.painter().text(Pos2::new(name_r.left(), name_r.center().y), Align2::LEFT_CENTER, &def.name, theme::font_body(), theme::TEXT_SECONDARY);
+        } else if let Some(new) = field::text_input(ui, name_r, ("propdef", &def.name), &def.name) {
             app.rename_prop_def(owner, &def.name, &new);
         }
         if !matches!(def.kind, PropKind::Variant { .. }) {
@@ -291,10 +428,10 @@ fn component_props(app: &mut App, ui: &mut Ui, pane: &mut Pane, id: NodeId) {
                     app.set_prop_default(owner, &def.name, PropValue::Text(v));
                 }
             }
-            (PropKind::Variant { options }, PropValue::Variant(cur)) => {
-                if let Some(i) = dropdown(ui, ctl, &key, cur, options) {
-                    app.set_prop_default(owner, &def.name, PropValue::Variant(options[i].clone()));
-                }
+            (PropKind::Variant { .. }, PropValue::Variant(cur)) => {
+                // Variant properties are derived from the variant names; their
+                // defaults follow add/rename/remove, not a separate editor.
+                ui.painter().text(Pos2::new(ctl.left(), ctl.center().y), Align2::LEFT_CENTER, cur, theme::font_body(), theme::TEXT_SECONDARY);
             }
             (PropKind::InstanceSwap { .. }, PropValue::Instance(c)) => {
                 let comps: Vec<NodeId> = all_components(&app.doc).into_iter().filter(|x| *x != owner).collect();

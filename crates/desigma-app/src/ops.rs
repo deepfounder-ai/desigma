@@ -646,6 +646,17 @@ impl App {
         if name.is_empty() {
             return;
         }
+        let is_variant = self.doc.get(id).is_some_and(|node| matches!(node.kind, NodeKind::Component(_)))
+            && self
+                .doc
+                .get(id)
+                .and_then(|node| node.parent)
+                .and_then(|parent| self.doc.get(parent))
+                .is_some_and(|parent| matches!(parent.kind, NodeKind::ComponentSet(_)));
+        if is_variant {
+            self.show_toast("Use Rename variant to keep the variant properties in sync", true);
+            return;
+        }
         self.edit_nodes(&[id], |n| n.name = name.clone());
     }
 

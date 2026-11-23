@@ -16,11 +16,11 @@ async fn stdio_handshake_discovery_edit_and_error_recovery() {
         assert!(tools.iter().any(|t| t.name == "desigma_list_files"));
         let schema = tools.iter().find(|t| t.name == "desigma_delete_page").unwrap().input_schema.clone();
         assert_eq!(schema["properties"]["node_id"]["type"], "integer");
-        // 44 upstream tools + 5 for components, instances and page rename
+        // 53 upstream tools + 5 for components, instances and page rename
         for name in ["desigma_create_component", "desigma_create_instance", "desigma_detach_instance", "desigma_sync_instances", "desigma_rename_page"] {
             assert!(tools.iter().any(|t| t.name == name), "missing component tool {name}");
         }
-        assert_eq!(tools.len(), 49);
+        assert_eq!(tools.len(), 58);
         assert!(tools.iter().all(|t| t.annotations.is_some()));
         let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
         let doc = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap();
@@ -776,6 +776,270 @@ async fn shared_styles_round_trip_over_stdio() {
         assert_eq!(node.structured_content.unwrap()["node"]["style_refs"]["fill"], style_key);
         let detached = client.call_tool(call("desigma_detach_style", json!({"node_ids":[rect_id],"property":"fill"}))).await.unwrap();
         assert_eq!(detached.is_error, Some(false), "{detached:?}");
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
+/// Variant lifecycle: combine, copy/move add, rename, remove, and undo.
+#[tokio::test]
+async fn component_variants_round_trip_over_stdio() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+        let page = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap().structured_content.unwrap()["pages"][0]["node_id"].clone();
+
+        let small =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Size=Small","width":100,"height":40}))).await.unwrap();
+        let small_id = small.structured_content.unwrap()["node"]["id"].clone();
+        let large =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Size=Large","width":120,"height":40}))).await.unwrap();
+        let large_id = large.structured_content.unwrap()["node"]["id"].clone();
+        for id in [&small_id, &large_id] {
+            client.call_tool(call("desigma_create_component", json!({"node_id":id}))).await.unwrap();
+        }
+        let combined = client.call_tool(call("desigma_combine_as_variants", json!({"component_ids":[small_id,large_id],"name":"Button"}))).await.unwrap();
+        assert_eq!(combined.is_error, Some(false), "{combined:?}");
+        let combined = combined.structured_content.unwrap();
+        let set_id = combined["set_id"].clone();
+        assert_eq!(combined["properties"].as_array().unwrap().len(), 1);
+        let set = client.call_tool(call("desigma_get_node", json!({"node_id":set_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(set["name"], "Button");
+        assert_eq!(set["children"].as_array().unwrap().len(), 2);
+
+        let instance = client.call_tool(call("desigma_create_instance", json!({"component_id":small_id,"parent_id":page}))).await.unwrap();
+        assert_eq!(instance.is_error, Some(false), "{instance:?}");
+        let instance_id = instance.structured_content.unwrap()["instance_id"].clone();
+
+        let copied = client
+            .call_tool(call("desigma_add_variant", json!({"set_id":set_id,"source_id":small_id,"mode":"copy","values":{"Size":"Medium"}})))
+            .await
+            .unwrap();
+        assert_eq!(copied.is_error, Some(false), "{copied:?}");
+        let copied = copied.structured_content.unwrap();
+        let medium_id = copied["variant_id"].clone();
+        assert_eq!(copied["name"], "Size=Medium");
+        assert_ne!(medium_id, small_id);
+        assert_eq!(
+            client.call_tool(call("desigma_get_node", json!({"node_id":small_id}))).await.unwrap().structured_content.unwrap()["node"]["parent"],
+            set_id
+        );
+        let instance_after = client.call_tool(call("desigma_get_node", json!({"node_id":instance_id}))).await.unwrap();
+        assert_eq!(instance_after.structured_content.unwrap()["node"]["kind"]["Instance"]["component"], small_id);
+        let selected = client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Size","value":"Medium"}))).await.unwrap();
+        assert_eq!(selected.is_error, Some(false), "{selected:?}");
+        let selected_node =
+            client.call_tool(call("desigma_get_node", json!({"node_id":instance_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(selected_node["kind"]["Instance"]["component"], medium_id, "the instance follows the variant property");
+        assert_eq!(selected_node["component"]["values"]["Size"]["Variant"], "Medium");
+
+        let standalone =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Icon","width":32,"height":32}))).await.unwrap();
+        let standalone_id = standalone.structured_content.unwrap()["node"]["id"].clone();
+        client.call_tool(call("desigma_create_component", json!({"node_id":standalone_id}))).await.unwrap();
+        let moved = client
+            .call_tool(call("desigma_add_variant", json!({"set_id":set_id,"source_id":standalone_id,"mode":"move","values":{"Size":"Icon"}})))
+            .await
+            .unwrap();
+        assert_eq!(moved.is_error, Some(false), "{moved:?}");
+        let moved_id = moved.structured_content.unwrap()["variant_id"].clone();
+        assert_eq!(
+            client.call_tool(call("desigma_get_node", json!({"node_id":moved_id}))).await.unwrap().structured_content.unwrap()["node"]["parent"],
+            set_id
+        );
+
+        let removed = client.call_tool(call("desigma_remove_variant", json!({"variant_id":moved_id}))).await.unwrap();
+        assert_eq!(removed.is_error, Some(false), "{removed:?}");
+        let set = client.call_tool(call("desigma_get_node", json!({"node_id":set_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(set["children"].as_array().unwrap().len(), 3);
+        let options = set["component"]["props"][0]["kind"]["Variant"]["options"].clone();
+        assert!(!options.as_array().unwrap().iter().any(|option| option == "Icon"), "removed option must be pruned");
+
+        let large_instance = client.call_tool(call("desigma_create_instance", json!({"component_id":large_id,"parent_id":page}))).await.unwrap();
+        assert_eq!(large_instance.is_error, Some(false), "{large_instance:?}");
+        let blocked = client.call_tool(call("desigma_remove_variant", json!({"variant_id":large_id}))).await.unwrap();
+        assert_eq!(blocked.is_error, Some(true), "a variant with an instance must be refused");
+        assert!(blocked.structured_content.unwrap()["error"].as_str().unwrap().contains("instance"));
+
+        // A set with a single variant cannot lose its last variant.
+        let lonely =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Only","width":40,"height":40}))).await.unwrap();
+        let lonely_id = lonely.structured_content.unwrap()["node"]["id"].clone();
+        client.call_tool(call("desigma_create_component", json!({"node_id":lonely_id}))).await.unwrap();
+        let lonely_set = client.call_tool(call("desigma_combine_as_variants", json!({"component_ids":[lonely_id]}))).await.unwrap();
+        assert_eq!(lonely_set.is_error, Some(false), "{lonely_set:?}");
+        let last = client.call_tool(call("desigma_remove_variant", json!({"variant_id":lonely_id}))).await.unwrap();
+        assert_eq!(last.is_error, Some(true), "the last variant must be refused");
+
+        let renamed = client.call_tool(call("desigma_rename_variant", json!({"variant_id":medium_id,"values":{"Size":"Wide"}}))).await.unwrap();
+        assert_eq!(renamed.is_error, Some(false), "{renamed:?}");
+        assert_eq!(renamed.structured_content.unwrap()["name"], "Size=Wide");
+        let set = client.call_tool(call("desigma_get_node", json!({"node_id":set_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        let options = set["component"]["props"][0]["kind"]["Variant"]["options"].clone();
+        assert!(options.as_array().unwrap().iter().any(|option| option == "Wide"));
+        assert!(!options.as_array().unwrap().iter().any(|option| option == "Medium"));
+        let renamed_instance =
+            client.call_tool(call("desigma_get_node", json!({"node_id":instance_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(renamed_instance["component"]["values"]["Size"]["Variant"], "Wide", "explicit instance selection follows the rename");
+        assert_eq!(renamed_instance["kind"]["Instance"]["component"], medium_id, "rename must not swap the instance");
+
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let restored = client.call_tool(call("desigma_get_node", json!({"node_id":medium_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(restored["name"], "Size=Medium", "renaming is one undo step");
+
+        let raw_rename = client.call_tool(call("desigma_update_node", json!({"node_id":medium_id,"name":"Size=Other"}))).await.unwrap();
+        assert_eq!(raw_rename.is_error, Some(true), "update_node must not bypass variant properties");
+
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
+/// Component properties: add, bind, set, rename, delete, and derived-variant refusal.
+#[tokio::test]
+async fn component_properties_round_trip_over_stdio() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+        let page = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap().structured_content.unwrap()["pages"][0]["node_id"].clone();
+
+        let card =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Card","width":200,"height":100}))).await.unwrap();
+        let card_id = card.structured_content.unwrap()["node"]["id"].clone();
+        let icon =
+            client.call_tool(call("desigma_create_node", json!({"parent_id":card_id,"kind":"rectangle","name":"Icon","width":20,"height":20}))).await.unwrap();
+        let icon_id = icon.structured_content.unwrap()["node"]["id"].clone();
+        let label = client
+            .call_tool(call("desigma_create_node", json!({"parent_id":card_id,"kind":"text","name":"Label","text":"Label","width":120,"height":24})))
+            .await
+            .unwrap();
+        let label_id = label.structured_content.unwrap()["node"]["id"].clone();
+        client.call_tool(call("desigma_create_component", json!({"node_id":card_id}))).await.unwrap();
+
+        let show = client
+            .call_tool(call("desigma_add_component_property", json!({"owner_id":card_id,"name":"Show icon","kind":"boolean","default":true})))
+            .await
+            .unwrap();
+        assert_eq!(show.is_error, Some(false), "{show:?}");
+        let caption =
+            client.call_tool(call("desigma_add_component_property", json!({"owner_id":card_id,"name":"Label","kind":"text","default":"Label"}))).await.unwrap();
+        assert_eq!(caption.is_error, Some(false), "{caption:?}");
+
+        let bind_show =
+            client.call_tool(call("desigma_bind_component_property", json!({"node_id":icon_id,"field":"visible","property":"Show icon"}))).await.unwrap();
+        assert_eq!(bind_show.is_error, Some(false), "{bind_show:?}");
+        let bind_label =
+            client.call_tool(call("desigma_bind_component_property", json!({"node_id":label_id,"field":"characters","property":"Label"}))).await.unwrap();
+        assert_eq!(bind_label.is_error, Some(false), "{bind_label:?}");
+
+        let instance = client.call_tool(call("desigma_create_instance", json!({"component_id":card_id,"parent_id":page}))).await.unwrap();
+        assert_eq!(instance.is_error, Some(false), "{instance:?}");
+        let instance_id = instance.structured_content.unwrap()["instance_id"].clone();
+        let kids = client.call_tool(call("desigma_list_nodes", json!({"parent_id":instance_id}))).await.unwrap().structured_content.unwrap()["nodes"]
+            .as_array()
+            .cloned()
+            .unwrap();
+        let mirror = |name: &str| kids.iter().find(|node| node["name"] == name).expect("mirrored child")["node_id"].clone();
+        let icon_i = mirror("Icon");
+        let label_i = mirror("Label");
+
+        let hidden = client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Show icon","value":false}))).await.unwrap();
+        assert_eq!(hidden.is_error, Some(false), "{hidden:?}");
+        let icon_node = client.call_tool(call("desigma_get_node", json!({"node_id":icon_i}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(icon_node["visible"], false);
+
+        let changed = client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Label","value":"Pay"}))).await.unwrap();
+        assert_eq!(changed.is_error, Some(false), "{changed:?}");
+        let label_node = client.call_tool(call("desigma_get_node", json!({"node_id":label_i}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(label_node["kind"]["Text"]["content"], "Pay");
+        let cleared = client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Label"}))).await.unwrap();
+        assert_eq!(cleared.is_error, Some(false), "{cleared:?}");
+        let label_node = client.call_tool(call("desigma_get_node", json!({"node_id":label_i}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(label_node["kind"]["Text"]["content"], "Label");
+
+        let renamed = client
+            .call_tool(call("desigma_update_component_property", json!({"owner_id":card_id,"name":"Label","new_name":"Caption","default":"Caption"})))
+            .await
+            .unwrap();
+        assert_eq!(renamed.is_error, Some(false), "{renamed:?}");
+        let def = client.call_tool(call("desigma_get_node", json!({"node_id":card_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        let defs = def["component"]["props"].clone();
+        assert!(defs.as_array().unwrap().iter().any(|def| def["name"] == "Caption"));
+        assert!(defs.as_array().unwrap().iter().all(|def| def["name"] != "Label"));
+
+        let mismatch = client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Show icon","value":"yes"}))).await.unwrap();
+        assert_eq!(mismatch.is_error, Some(true), "type mismatch must fail");
+
+        let alt = client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Alt","width":20,"height":20}))).await.unwrap();
+        let alt_id = alt.structured_content.unwrap()["node"]["id"].clone();
+        client.call_tool(call("desigma_create_component", json!({"node_id":alt_id}))).await.unwrap();
+        let swap = client
+            .call_tool(call(
+                "desigma_add_component_property",
+                json!({"owner_id":card_id,"name":"Icon swap","kind":"instance_swap","default":alt_id,"preferred":[alt_id]}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(swap.is_error, Some(false), "{swap:?}");
+        let swapped = client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Icon swap","value":alt_id}))).await.unwrap();
+        assert_eq!(swapped.is_error, Some(false), "{swapped:?}");
+
+        let variant_prop = client.call_tool(call("desigma_add_component_property", json!({"owner_id":card_id,"name":"State","kind":"variant"}))).await.unwrap();
+        assert_eq!(variant_prop.is_error, Some(true), "variant properties are derived");
+
+        client.call_tool(call("desigma_delete_component_property", json!({"owner_id":card_id,"name":"Icon swap"}))).await.unwrap();
+        let after_delete =
+            client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Icon swap","value":alt_id}))).await.unwrap();
+        assert_eq!(after_delete.is_error, Some(true), "deleted property cannot be set");
+
+        client.cancel().await.unwrap();
+    })
+    .await
+    .expect("MCP subprocess must finish within 30 seconds");
+}
+
+/// Renaming one dimension keeps an option that another variant still uses.
+#[tokio::test]
+async fn renaming_a_shared_variant_value_keeps_the_option() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_desigma-mcp"));
+        command.arg("--workspace").arg(env!("CARGO_MANIFEST_DIR"));
+        command.env(desigma_mcp::live::ENV_FILE, "");
+        let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+        let call = |name: &'static str, args: Value| CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+        let page = client.call_tool(call("desigma_get_document", json!({}))).await.unwrap().structured_content.unwrap()["pages"][0]["node_id"].clone();
+        let mut ids = Vec::new();
+        for name in ["Size=Small, State=Default", "Size=Small, State=Hover", "Size=Large, State=Default"] {
+            let frame =
+                client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":name,"width":100,"height":40}))).await.unwrap();
+            let id = frame.structured_content.unwrap()["node"]["id"].clone();
+            client.call_tool(call("desigma_create_component", json!({"node_id":id}))).await.unwrap();
+            ids.push(id);
+        }
+        let combined = client.call_tool(call("desigma_combine_as_variants", json!({"component_ids":ids,"name":"Button"}))).await.unwrap();
+        assert_eq!(combined.is_error, Some(false), "{combined:?}");
+        let combined = combined.structured_content.unwrap();
+        let first = combined["variant_ids"][0].clone();
+        let set_id = combined["set_id"].clone();
+        let renamed = client.call_tool(call("desigma_rename_variant", json!({"variant_id":first,"values":{"Size":"Small","State":"Idle"}}))).await.unwrap();
+        assert_eq!(renamed.is_error, Some(false), "{renamed:?}");
+        let set = client.call_tool(call("desigma_get_node", json!({"node_id":set_id}))).await.unwrap();
+        let set = set.structured_content.unwrap()["node"].clone();
+        let defs = set["component"]["props"].as_array().unwrap();
+        let state = defs.iter().find(|def| def["name"] == "State").unwrap();
+        let options = state["kind"]["Variant"]["options"].as_array().unwrap();
+        assert!(options.iter().any(|option| option == "Default"), "another variant still uses Default: {options:?}");
+        assert!(options.iter().any(|option| option == "Hover"));
+        assert!(options.iter().any(|option| option == "Idle"));
+        assert_eq!(state["default"]["Variant"], "Idle", "the renamed variant keeps the default through its new value");
         client.cancel().await.unwrap();
     })
     .await

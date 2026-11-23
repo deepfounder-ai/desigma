@@ -57,6 +57,9 @@ pub enum Action {
     CreateComponent,
     Detach,
     CombineVariants,
+    AddVariant,
+    RemoveVariant,
+    RenameVariant,
     GoToMain,
     ResetInstance,
     Copy,
@@ -176,6 +179,9 @@ pub fn run(app: &mut App, ctx: &Context, a: Action) {
         Action::CreateComponent => app.create_component(),
         Action::Detach => app.detach_selection(),
         Action::CombineVariants => app.combine_selection_as_variants(),
+        Action::AddVariant => app.add_variant_from_selection(),
+        Action::RemoveVariant => app.remove_variant_from_selection(),
+        Action::RenameVariant => app.rename_variant_from_selection(),
         Action::GoToMain => {
             if let Some(i) = app.selected_instances().first().copied() {
                 app.go_to_main(i);
