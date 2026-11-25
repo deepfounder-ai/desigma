@@ -246,9 +246,9 @@ Motion follows the workflow of Figma's Motion (Beta) mode but is desigma's own i
 </p>
 
 <p align="center">
-  <img src="docs/images/monet/animation-export.png" alt="The Monet Export dialog: animation rows for MP4, GIF, WebM and PNG sequence sit below the layer export presets" width="900">
+  <img src="docs/images/monet/animation-export.png" alt="The Monet editor in Motion mode: the one right-hand Export section with Animate timeline enabled, an MP4 format picker and a single Export Motion Card animation button" width="900">
   <br>
-  <sub>The animation rows live in the normal Export dialog; choosing a path opens the native save picker, and encoding runs on a background thread.</sub>
+  <sub>Export lives in one place: the right-hand Export section switches between still-image export and MP4, GIF, WebM or PNG-sequence timeline export; there is no separate animation dialog, and encoding runs on a background thread.</sub>
 </p>
 
 ## External brushes and WGSL materials (Monet)
