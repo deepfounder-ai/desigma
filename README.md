@@ -229,6 +229,44 @@ cargo run -p desigma-app -- --export-animation onboarding.desigma --out onboardi
 
 Motion follows the workflow of Figma's Motion (Beta) mode but is desigma's own implementation, and it is not affiliated with Figma, Inc. Animation data lives in `.desigma` files and in desigma's REST JSON export; it cannot be written back into `.fig` files.
 
+### Motion in the GPUI front-end
+
+[Monet](https://github.com/MonetDesigns/Monet) is the GPUI front-end for this engine. Its Motion mode keeps desigma's timeline model, but adds **MP4** output next to GIF, WebM and PNG sequences, and moves file picking and encoding off the UI thread so a 60 fps export does not freeze the window. Fill, stroke colour and stroke weight are auto-keyable tracks, not just the transform fields, and the animation export sits on the arrow at the top right of the timeline.
+
+<p align="center">
+  <img src="docs/images/monet/motion-hero.gif" alt="A loop of the Monet motion card: its fill, stroke, stroke weight, scale and opacity tracks animate together while the orbit dot circles the ring" width="720">
+  <br>
+  <sub>One 2.4 s loop with fill, stroke, stroke weight, scale and opacity keyed. Rendered by the same engine; MP4, GIF, WebM and PNG sequence export.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/monet/motion-fill-stroke-weight.png" alt="The Monet editor at full window width: the Motion inspector on the right and a timeline with Fill, Stroke and Stroke weight rows under the selected card" width="900">
+  <br>
+  <sub>The GPUI editor in Motion mode: Fill <code>#4338CA</code>, Stroke <code>#F472B6</code>, Stroke weight <code>10 px</code> as separate keyed rows.</sub>
+</p>
+
+## External brushes and WGSL materials (Monet)
+
+The Monet front-end also treats brushes and shaders as files rather than fixed dropdowns:
+
+- **Brushes:** import an `.abr` library at runtime, then stamp any tip along a vector path with spacing, jitter, scatter and a seed. The bundled `monet-defaults.abr` supplies ribbon, ink and bristle tips.
+- **Materials:** bind a `.wgsl` file to a layer, expose its uniforms in the Effects panel, and the canvas runs it over the pixels behind that node before compositing the result back. A glass material can sample the live backdrop underneath a card.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/monet/brushes.png" alt="Three brush strokes in crimson, blue and amber, each stamped from a different tip in an imported .abr library" width="440">
+      <br>
+      <sub>External <code>.abr</code>: ribbon, ink and bristle tips on vector paths.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/monet/wgsl-glass.png" alt="A weather card with a translucent glass material: the purple, teal and orange backdrop shows through the frosted surface while text stays crisp" width="440">
+      <br>
+      <sub>External WGSL glass over the live canvas tile, with adjustable uniforms.</sub>
+    </td>
+  </tr>
+</table>
+
 ## AI images (beta)
 
 Generate images, or regenerate part of one, without leaving the canvas. desigma has no AI service of its own: it uses **your own [OpenRouter](https://openrouter.ai) key** and the image model you pick, at your cost.
