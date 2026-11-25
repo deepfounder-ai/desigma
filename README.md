@@ -236,13 +236,19 @@ Motion follows the workflow of Figma's Motion (Beta) mode but is desigma's own i
 <p align="center">
   <img src="docs/images/monet/motion-hero.gif" alt="A loop of the Monet motion card: its fill, stroke, stroke weight, scale and opacity tracks animate together while the orbit dot circles the ring" width="720">
   <br>
-  <sub>One 2.4 s loop with fill, stroke, stroke weight, scale and opacity keyed. Rendered by the same engine; MP4, GIF, WebM and PNG sequence export.</sub>
+  <sub>One 2.4 s loop with fill, stroke, stroke weight, scale and opacity keyed, captured in the running GPUI editor; MP4, GIF, WebM and PNG sequence export.</sub>
 </p>
 
 <p align="center">
   <img src="docs/images/monet/motion-fill-stroke-weight.png" alt="The Monet editor at full window width: the Motion inspector on the right and a timeline with Fill, Stroke and Stroke weight rows under the selected card" width="900">
   <br>
   <sub>The GPUI editor in Motion mode: Fill <code>#4338CA</code>, Stroke <code>#F472B6</code>, Stroke weight <code>10 px</code> as separate keyed rows.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/monet/animation-export.png" alt="The Monet Export dialog: animation rows for MP4, GIF, WebM and PNG sequence sit below the layer export presets" width="900">
+  <br>
+  <sub>The animation rows live in the normal Export dialog; choosing a path opens the native save picker, and encoding runs on a background thread.</sub>
 </p>
 
 ## External brushes and WGSL materials (Monet)
