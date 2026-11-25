@@ -231,7 +231,7 @@ Motion follows the workflow of Figma's Motion (Beta) mode but is desigma's own i
 
 ### Motion in the GPUI front-end
 
-[Monet](https://github.com/MonetDesigns/Monet) is the GPUI front-end for this engine. Its Motion mode keeps desigma's timeline model, but adds **MP4** output next to GIF, WebM and PNG sequences, and moves file picking and encoding off the UI thread so a 60 fps export does not freeze the window. Fill, stroke colour and stroke weight are auto-keyable tracks, not just the transform fields, and the animation export sits on the arrow at the top right of the timeline.
+[Monet](https://github.com/MonetDesigns/Monet) is the GPUI front-end for this engine. Its Motion mode keeps desigma's timeline model, but adds **MP4** output next to GIF, WebM and PNG sequences, and moves file picking and encoding off the UI thread so a 60 fps export does not freeze the window. Fill, stroke colour and stroke weight are auto-keyable tracks, not just the transform fields, and export lives in the right-hand Export section: whatever layer is selected is what gets exported, with the timeline formats available in Motion mode.
 
 <p align="center">
   <img src="docs/images/monet/motion-hero.gif" alt="A loop of the Monet motion card: its fill, stroke, stroke weight, scale and opacity tracks animate together while the orbit dot circles the ring" width="720">
@@ -246,9 +246,9 @@ Motion follows the workflow of Figma's Motion (Beta) mode but is desigma's own i
 </p>
 
 <p align="center">
-  <img src="docs/images/monet/animation-export.png" alt="The Monet editor in Motion mode: the one right-hand Export section with Animate timeline enabled, an MP4 format picker and a single Export Motion Card animation button" width="900">
+  <img src="docs/images/monet/animation-export.png" alt="The Monet editor in Motion mode: the right-hand Export section follows the selection, with an MP4 format picker and an Export Motion Card button, and no separate animation switch" width="900">
   <br>
-  <sub>Export lives in one place: the right-hand Export section switches between still-image export and MP4, GIF, WebM or PNG-sequence timeline export; there is no separate animation dialog, and encoding runs on a background thread.</sub>
+  <sub>Export lives in one place: the right-hand Export section exports the selected layer; in Motion mode it offers MP4, GIF, WebM or PNG-sequence timeline export, with no separate animation dialog and no extra switch. Encoding runs on a background thread.</sub>
 </p>
 
 ## External brushes and WGSL materials (Monet)
