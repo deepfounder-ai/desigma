@@ -310,8 +310,7 @@ fn variant_section(app: &mut App, ui: &mut Ui, pane: &mut Pane, id: NodeId) {
             section_sep(ui, pane, false);
         }
         NodeKind::Component(_) => {
-            let set = node.parent.filter(|parent| matches!(app.doc.get(*parent).map(|node| &node.kind), Some(NodeKind::ComponentSet(_))));
-            if set.is_some() {
+            if variant_set(&app.doc, id).is_some() {
                 title(ui, pane, "Variant", None, false);
                 if action_button(ui, pane, "variant-rename", "Rename variant") {
                     app.open_rename_variant(id);

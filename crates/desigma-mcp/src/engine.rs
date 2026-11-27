@@ -445,7 +445,7 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             let set = NodeId(a.set_id);
             let cmd = desigma_doc::add_variant(host.doc_mut(), set, NodeId(a.source_id), mode, &values).map_err(|e| e.to_string())?;
             host.exec_derived(cmd)?;
-            let variant_id = find_variant(host.doc(), set, &values).ok_or("variant was not created")?;
+            let variant_id = desigma_doc::find_variant(host.doc(), set, &values).ok_or("variant was not created")?;
             let properties = host.doc().get(set).map(|n| n.component.props.clone()).unwrap_or_default();
             let name = host.doc().get(variant_id).map(|n| n.name.clone()).unwrap_or_default();
             Ok(json!({"variant_id":variant_id.0,"name":name,"properties":properties,"changed":true}))
@@ -463,14 +463,18 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
             let a: RenameVariantArgs = parse(args)?;
             let values: Vec<(String, String)> = a.values.into_iter().collect();
             let cmd = desigma_doc::rename_variant(host.doc_mut(), NodeId(a.variant_id), &values).map_err(|e| e.to_string())?;
-            host.exec_derived(cmd)?;
+            let changed = !is_noop(&cmd);
+            if changed {
+                host.exec_derived(cmd)?;
+            }
             let variant = node(host, a.variant_id)?.clone();
             let set = variant.parent.ok_or("variant has no component set")?;
             let properties = host.doc().get(set).map(|n| n.component.props.clone()).unwrap_or_default();
-            Ok(json!({"variant_id":a.variant_id,"name":variant.name,"properties":properties,"changed":true}))
+            Ok(json!({"variant_id":a.variant_id,"name":variant.name,"properties":properties,"changed":changed}))
         }
         "desigma_add_component_property" => {
             let a: AddComponentPropertyArgs = parse(args)?;
+            bounded_text("name", &a.name, 1024)?;
             let has_preferred = a.preferred.as_ref().is_some_and(|preferred| !preferred.is_empty());
             let preferred = a.preferred.unwrap_or_default();
             let kind = component_prop_kind(&a.kind, preferred)?;
@@ -485,6 +489,10 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         }
         "desigma_update_component_property" => {
             let a: UpdateComponentPropertyArgs = parse(args)?;
+            bounded_text("name", &a.name, 1024)?;
+            if let Some(new_name) = &a.new_name {
+                bounded_text("new_name", new_name, 1024)?;
+            }
             let owner = NodeId(a.owner_id);
             let def = property_def(host.doc(), owner, &a.name)?;
             let default = match a.default {
@@ -508,13 +516,20 @@ pub fn call<H: Host>(host: &mut H, name: &str, args: Value) -> Result<Value, Str
         }
         "desigma_bind_component_property" => {
             let a: BindComponentPropertyArgs = parse(args)?;
+            if let Some(property) = &a.property {
+                bounded_text("property", property, 1024)?;
+            }
             let field = property_field(&a.field)?;
             let cmd = desigma_doc::bind_component_property(host.doc_mut(), NodeId(a.node_id), field, a.property.as_deref()).map_err(|e| e.to_string())?;
-            host.exec_derived(cmd)?;
-            Ok(json!({"node_id":a.node_id,"field":a.field,"property":a.property,"changed":true}))
+            let changed = !is_noop(&cmd);
+            if changed {
+                host.exec_derived(cmd)?;
+            }
+            Ok(json!({"node_id":a.node_id,"field":a.field,"property":a.property,"changed":changed}))
         }
         "desigma_set_instance_property" => {
             let a: SetInstancePropertyArgs = parse(args)?;
+            bounded_text("name", &a.name, 1024)?;
             let target = node(host, a.node_id)?;
             if !matches!(target.kind, NodeKind::Instance { .. }) {
                 return Err("target is not an instance".into());
@@ -661,17 +676,6 @@ fn property_field(field: &str) -> Result<OverrideField, String> {
         "main_component" => Ok(OverrideField::MainComponent),
         other => Err(format!("field must be visible, characters, or main_component, got {other}")),
     }
-}
-
-/// Finds a variant in `set` whose property values match `values` exactly.
-fn find_variant(doc: &Document, set: NodeId, values: &[(String, String)]) -> Option<NodeId> {
-    let wanted: BTreeMap<_, _> = values.iter().cloned().collect();
-    desigma_doc::components_of(doc, set).into_iter().find(|id| {
-        doc.get(*id).is_some_and(|node| {
-            let actual: BTreeMap<_, _> = desigma_doc::parse_variant_name(&node.name).into_iter().collect();
-            actual == wanted
-        })
-    })
 }
 
 /// Renders one layer to PNG bytes. Shared by the MCP session (which writes the
@@ -830,10 +834,7 @@ fn update<H: Host>(host: &mut H, a: UpdateArgs) -> Result<Value, String> {
     }
     if let Some(name) = a.name {
         bounded_text("name", &name, 1024)?;
-        if name != node.name
-            && matches!(&node.kind, NodeKind::Component(_))
-            && node.parent.and_then(|parent| host.doc().get(parent)).is_some_and(|parent| matches!(parent.kind, NodeKind::ComponentSet(_)))
-        {
+        if name != node.name && desigma_doc::variant_set(host.doc(), node.id).is_some() {
             return Err("variant names must be changed with desigma_rename_variant".into());
         }
         node.name = name;

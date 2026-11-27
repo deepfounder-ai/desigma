@@ -134,7 +134,7 @@ impl App {
     }
 
     /// Default values for a new variant in `set`: the first option of each
-    /// variant property, with a suffix that keeps the first copy from colliding.
+    /// variant property.
     pub(crate) fn variant_defaults(&self, set: NodeId) -> Vec<(String, String)> {
         let Some(node) = self.doc.get(set) else { return Vec::new() };
         node.component
@@ -145,16 +145,6 @@ impl App {
                 _ => None,
             })
             .collect()
-    }
-
-    fn find_variant(&self, set: NodeId, values: &[(String, String)]) -> Option<NodeId> {
-        let wanted: std::collections::BTreeMap<_, _> = values.iter().cloned().collect();
-        components_of(&self.doc, set).into_iter().find(|id| {
-            self.doc.get(*id).is_some_and(|node| {
-                let actual: std::collections::BTreeMap<_, _> = parse_variant_name(&node.name).into_iter().collect();
-                actual == wanted
-            })
-        })
     }
 
     pub fn open_add_variant_copy(&mut self, set: NodeId, source: NodeId) {
@@ -180,19 +170,14 @@ impl App {
             tx.cancel(&mut self.doc);
             return Err("variant edit failed".into());
         }
-        let id = self.find_variant(set, values).ok_or("variant was not created")?;
+        let id = desigma_doc::find_variant(&self.doc, set, values).ok_or("variant was not created")?;
         self.run_tx(tx);
         self.selection = vec![id];
         Ok(id)
     }
 
     pub fn remove_variant(&mut self, variant: NodeId) -> Result<NodeId, String> {
-        let set = self
-            .doc
-            .get(variant)
-            .and_then(|node| node.parent)
-            .filter(|parent| matches!(self.doc.get(*parent).map(|node| &node.kind), Some(NodeKind::ComponentSet(_))))
-            .ok_or("variant has no component set")?;
+        let set = variant_set(&self.doc, variant).ok_or("variant has no component set")?;
         let cmd = desigma_doc::remove_variant(&mut self.doc, variant).map_err(|e| e.to_string())?;
         let mut tx = Tx::new();
         if !self.push_cmd(&mut tx, cmd) {
@@ -217,14 +202,7 @@ impl App {
     }
 
     fn selected_variant(&self) -> Option<NodeId> {
-        self.selection.first().copied().filter(|id| {
-            self.doc.get(*id).is_some_and(|node| matches!(node.kind, NodeKind::Component(_)))
-                && self
-                    .doc
-                    .get(*id)
-                    .and_then(|node| node.parent)
-                    .is_some_and(|parent| matches!(self.doc.get(parent).map(|node| &node.kind), Some(NodeKind::ComponentSet(_))))
-        })
+        self.selection.first().copied().filter(|id| variant_set(&self.doc, *id).is_some())
     }
 
     pub fn add_variant_from_selection(&mut self) {
@@ -236,12 +214,7 @@ impl App {
                 }
             }
             Some(NodeKind::Component(_)) => {
-                if let Some(parent) = self
-                    .doc
-                    .get(id)
-                    .and_then(|node| node.parent)
-                    .filter(|parent| matches!(self.doc.get(*parent).map(|node| &node.kind), Some(NodeKind::ComponentSet(_))))
-                {
+                if let Some(parent) = variant_set(&self.doc, id) {
                     self.open_add_variant_copy(parent, id);
                 } else {
                     self.open_add_variant_move(id);
@@ -564,11 +537,13 @@ mod tests {
         assert_eq!(components_of(&app.doc, set).len(), 3);
         let medium = app.doc.nodes.values().find(|node| node.name == "Size=Medium").map(|node| node.id).expect("medium variant");
         assert_eq!(app.doc.get(medium).unwrap().parent, Some(set));
+        assert_eq!(app.selection, vec![medium], "adding selects the new variant");
 
         app.open_rename_variant(medium);
         app.ui.variant_edit.as_mut().unwrap().values = vec![("Size".into(), "Wide".into())];
         app.submit_variant_edit();
         assert_eq!(app.doc.get(medium).unwrap().name, "Size=Wide");
+        assert_eq!(app.selection, vec![medium], "renaming keeps the variant selected");
         app.undo();
         assert_eq!(app.doc.get(medium).unwrap().name, "Size=Medium", "rename is one undo step");
     }
@@ -600,5 +575,6 @@ mod tests {
         app.submit_variant_edit();
         assert_eq!(app.doc.get(standalone).unwrap().parent, Some(set));
         assert_eq!(app.doc.get(standalone).unwrap().name, "Size=Icon");
+        assert_eq!(app.selection, vec![standalone], "moving selects the new variant");
     }
 }

@@ -166,6 +166,26 @@ pub fn components_of(doc: &Document, owner: NodeId) -> Vec<NodeId> {
     }
 }
 
+/// The component set containing the variant `id`, if `id` is a variant.
+pub fn variant_set(doc: &Document, id: NodeId) -> Option<NodeId> {
+    let node = doc.get(id)?;
+    if !matches!(node.kind, NodeKind::Component(_)) {
+        return None;
+    }
+    node.parent.filter(|parent| matches!(doc.get(*parent).map(|p| &p.kind), Some(NodeKind::ComponentSet(_))))
+}
+
+/// Finds the variant in `set` whose property values match `values` exactly.
+pub fn find_variant(doc: &Document, set: NodeId, values: &[(String, String)]) -> Option<NodeId> {
+    components_of(doc, set).into_iter().find(|id| {
+        doc.get(*id).is_some_and(|node| {
+            let actual: BTreeMap<_, _> = parse_variant_name(&node.name).into_iter().collect();
+            let wanted: BTreeMap<_, _> = values.iter().cloned().collect();
+            actual == wanted
+        })
+    })
+}
+
 /// The main components `id` sits inside: as a layer of them, or in a copy of them.
 fn enclosing_components(doc: &Document, id: Option<NodeId>) -> BTreeSet<NodeId> {
     let mut enclosing = BTreeSet::new();
@@ -1045,6 +1065,28 @@ pub fn bind_prop(doc: &mut Document, node: NodeId, field: OverrideField, prop: O
 // Variants
 // ---------------------------------------------------------------------------
 
+const VARIANT_PAD: f32 = 24.0;
+const VARIANT_GAP: f32 = 16.0;
+
+/// Grid positions and set size for the given variant sizes.
+fn variant_grid(sizes: &[Vec2], cols: usize) -> (Vec<(f32, f32)>, Vec2) {
+    let cols = cols.max(1);
+    let (mut x, mut y, mut row_h, mut max_x) = (VARIANT_PAD, VARIANT_PAD, 0.0f32, 0.0f32);
+    let mut positions = Vec::with_capacity(sizes.len());
+    for (index, size) in sizes.iter().enumerate() {
+        if index > 0 && index % cols == 0 {
+            x = VARIANT_PAD;
+            y += row_h + VARIANT_GAP;
+            row_h = 0.0;
+        }
+        positions.push((x, y));
+        x += size.x + VARIANT_GAP;
+        max_x = max_x.max(x - VARIANT_GAP);
+        row_h = row_h.max(size.y);
+    }
+    (positions, Vec2::new(max_x + VARIANT_PAD, y + row_h + VARIANT_PAD))
+}
+
 /// Groups components into a new component set (Figma "Combine as variants").
 /// Components whose name is not `Prop=Value` become `Property 1=<name>`; the
 /// set gets a Variant property definition per distinct property and the
@@ -1092,23 +1134,8 @@ pub fn combine_as_variants_with_name(doc: &mut Document, components: &[NodeId], 
 
     // Grid layout: columns = options of the last property (a single row for one property).
     let cols = if defs.len() > 1 { defs.last().map(|(_, o)| o.len()).unwrap_or(1).max(1) } else { comps.len() };
-    const PAD: f32 = 24.0;
-    const GAP: f32 = 16.0;
-    let mut pos = Vec::new();
-    let (mut x, mut y, mut row_h, mut max_x) = (PAD, PAD, 0.0f32, 0.0f32);
-    for (k, id) in comps.iter().enumerate() {
-        if k > 0 && k % cols == 0 {
-            x = PAD;
-            y += row_h + GAP;
-            row_h = 0.0;
-        }
-        let sz = doc.get(*id).unwrap().size;
-        pos.push((x, y));
-        x += sz.x + GAP;
-        max_x = max_x.max(x - GAP);
-        row_h = row_h.max(sz.y);
-    }
-    let total_h = y + row_h + PAD;
+    let sizes: Vec<Vec2> = comps.iter().map(|id| doc.get(*id).unwrap().size).collect();
+    let (pos, set_size) = variant_grid(&sizes, cols);
     let origin = doc.get(first).unwrap().transform.translation();
 
     let sid = doc.alloc_id();
@@ -1116,7 +1143,7 @@ pub fn combine_as_variants_with_name(doc: &mut Document, components: &[NodeId], 
     let base = doc.get(first).unwrap().name.clone();
     set.name = name.map(str::to_string).unwrap_or_else(|| if parse_variant_name(&base).is_empty() { base } else { "Component set".to_string() });
     set.transform = Affine::translate(origin.x, origin.y);
-    set.size = Vec2::new(max_x + PAD, total_h);
+    set.size = set_size;
     set.fills = Vec::new();
     set.component.props = props;
 
@@ -1217,25 +1244,15 @@ fn layout_variant_set(c: &mut Ctx, set: NodeId) {
     } else {
         variants.len()
     };
-    const PAD: f32 = 24.0;
-    const GAP: f32 = 16.0;
-    let (mut x, mut y, mut row_h, mut max_x) = (PAD, PAD, 0.0f32, 0.0f32);
-    for (index, id) in variants.iter().enumerate() {
-        if index > 0 && index % cols == 0 {
-            x = PAD;
-            y += row_h + GAP;
-            row_h = 0.0;
-        }
-        let Some(size) = c.s.get(*id).map(|node| node.size) else { continue };
-        let mut node = c.s.get(*id).unwrap().clone();
+    let sizes: Vec<Vec2> = variants.iter().filter_map(|id| c.s.get(*id).map(|node| node.size)).collect();
+    let (positions, set_size) = variant_grid(&sizes, cols);
+    for (id, (x, y)) in variants.iter().zip(positions) {
+        let Some(mut node) = c.s.get(*id).cloned() else { continue };
         node.transform = Affine::translate(x, y);
         c.update(node);
-        x += size.x + GAP;
-        max_x = max_x.max(x - GAP);
-        row_h = row_h.max(size.y);
     }
     if let Some(mut node) = c.s.get(set).cloned() {
-        node.size = Vec2::new(max_x + PAD, y + row_h + PAD);
+        node.size = set_size;
         c.update(node);
     }
 }
@@ -1552,12 +1569,58 @@ pub fn update_component_property(
         }
     }
     if let Some(default) = default {
+        let target = rename.unwrap_or(name);
         if let Some(mut node) = c.s.get(owner).cloned() {
-            let target = rename.unwrap_or(name);
             if let Some(def) = node.component.props.iter_mut().find(|def| def.name == target) {
-                def.default = default;
+                def.default = default.clone();
             }
             c.update(node);
+        }
+        // A property default is the main component's value. Update the bound
+        // layers before syncing so instances without an explicit value follow
+        // it, while local overrides and explicit instance values still win.
+        let mut ids = Vec::new();
+        for component in components_of(&c.s, owner) {
+            ids.extend(subtree_ids(&c.s, component));
+        }
+        for id in ids {
+            if instance_root_of(&c.s, id).is_some_and(|root| root != id) {
+                continue;
+            }
+            let Some(node) = c.s.get(id).cloned() else { continue };
+            let mut changed = false;
+            for (field, prop) in node.component.bindings.clone() {
+                if prop != target {
+                    continue;
+                }
+                match (field, &default) {
+                    (OverrideField::Visible, PropValue::Bool(visible)) => {
+                        if node.visible != *visible {
+                            let mut node = node.clone();
+                            node.visible = *visible;
+                            c.update(node);
+                        }
+                    }
+                    (OverrideField::Characters, PropValue::Text(text)) => {
+                        let mut node = node.clone();
+                        if let NodeKind::Text(props) = &mut node.kind {
+                            if props.content != *text {
+                                props.content = text.clone();
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            c.update(node);
+                        }
+                    }
+                    (OverrideField::MainComponent, PropValue::Instance(component)) => {
+                        if matches!(c.s.get(*component).map(|node| &node.kind), Some(NodeKind::Component(_))) {
+                            swap_main(&mut c, id, *component);
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
     sync_component(&mut c, owner);
@@ -1580,7 +1643,10 @@ pub fn delete_component_property(doc: &mut Document, owner: NodeId, name: &str) 
 /// Instance Swap drives the main component.
 pub fn bind_component_property(doc: &mut Document, node: NodeId, field: OverrideField, property: Option<&str>) -> Result<Command, DocError> {
     let target = doc.get(node).ok_or(DocError::NotFound(node))?;
-    if target.component.source.is_some() {
+    // Instance roots are valid binding targets (an Instance Swap slot is a
+    // nested instance). Mirrored descendants are not: they are owned by the
+    // instance and would be overwritten on the next sync.
+    if target.component.source.is_some() && instance_root_of(doc, node) != Some(node) {
         return Err(component_error("cannot bind a mirrored layer inside an instance"));
     }
     let Some(component) = enclosing_component(doc, node) else {

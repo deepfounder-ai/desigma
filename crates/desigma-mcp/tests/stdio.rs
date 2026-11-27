@@ -810,6 +810,11 @@ async fn component_variants_round_trip_over_stdio() {
         let set = client.call_tool(call("desigma_get_node", json!({"node_id":set_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
         assert_eq!(set["name"], "Button");
         assert_eq!(set["children"].as_array().unwrap().len(), 2);
+        let missing = client.call_tool(call("desigma_add_variant", json!({"set_id":set_id,"source_id":small_id,"mode":"copy","values":{}}))).await.unwrap();
+        assert_eq!(missing.is_error, Some(true), "every variant property is required");
+        let unknown =
+            client.call_tool(call("desigma_add_variant", json!({"set_id":set_id,"source_id":small_id,"mode":"copy","values":{"Nope":"X"}}))).await.unwrap();
+        assert_eq!(unknown.is_error, Some(true), "unknown variant properties are refused");
 
         let instance = client.call_tool(call("desigma_create_instance", json!({"component_id":small_id,"parent_id":page}))).await.unwrap();
         assert_eq!(instance.is_error, Some(false), "{instance:?}");
@@ -841,6 +846,9 @@ async fn component_variants_round_trip_over_stdio() {
             client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Icon","width":32,"height":32}))).await.unwrap();
         let standalone_id = standalone.structured_content.unwrap()["node"]["id"].clone();
         client.call_tool(call("desigma_create_component", json!({"node_id":standalone_id}))).await.unwrap();
+        let standalone_instance = client.call_tool(call("desigma_create_instance", json!({"component_id":standalone_id,"parent_id":page}))).await.unwrap();
+        assert_eq!(standalone_instance.is_error, Some(false), "{standalone_instance:?}");
+        let standalone_instance_id = standalone_instance.structured_content.unwrap()["instance_id"].clone();
         let moved = client
             .call_tool(call("desigma_add_variant", json!({"set_id":set_id,"source_id":standalone_id,"mode":"move","values":{"Size":"Icon"}})))
             .await
@@ -851,6 +859,11 @@ async fn component_variants_round_trip_over_stdio() {
             client.call_tool(call("desigma_get_node", json!({"node_id":moved_id}))).await.unwrap().structured_content.unwrap()["node"]["parent"],
             set_id
         );
+        let moved_instance =
+            client.call_tool(call("desigma_get_node", json!({"node_id":standalone_instance_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(moved_instance["kind"]["Instance"]["component"], standalone_id, "moving a component keeps its existing instances linked");
+        let detached = client.call_tool(call("desigma_detach_instance", json!({"node_id":standalone_instance_id}))).await.unwrap();
+        assert_eq!(detached.is_error, Some(false), "{detached:?}");
 
         let removed = client.call_tool(call("desigma_remove_variant", json!({"variant_id":moved_id}))).await.unwrap();
         assert_eq!(removed.is_error, Some(false), "{removed:?}");
@@ -875,6 +888,8 @@ async fn component_variants_round_trip_over_stdio() {
         let last = client.call_tool(call("desigma_remove_variant", json!({"variant_id":lonely_id}))).await.unwrap();
         assert_eq!(last.is_error, Some(true), "the last variant must be refused");
 
+        let collision = client.call_tool(call("desigma_rename_variant", json!({"variant_id":medium_id,"values":{"Size":"Small"}}))).await.unwrap();
+        assert_eq!(collision.is_error, Some(true), "a value collision with another variant is refused");
         let renamed = client.call_tool(call("desigma_rename_variant", json!({"variant_id":medium_id,"values":{"Size":"Wide"}}))).await.unwrap();
         assert_eq!(renamed.is_error, Some(false), "{renamed:?}");
         assert_eq!(renamed.structured_content.unwrap()["name"], "Size=Wide");
@@ -886,6 +901,8 @@ async fn component_variants_round_trip_over_stdio() {
             client.call_tool(call("desigma_get_node", json!({"node_id":instance_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
         assert_eq!(renamed_instance["component"]["values"]["Size"]["Variant"], "Wide", "explicit instance selection follows the rename");
         assert_eq!(renamed_instance["kind"]["Instance"]["component"], medium_id, "rename must not swap the instance");
+        let same = client.call_tool(call("desigma_rename_variant", json!({"variant_id":medium_id,"values":{"Size":"Wide"}}))).await.unwrap();
+        assert_eq!(same.structured_content.unwrap()["changed"], false, "renaming to the current values is a no-op");
 
         client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
         let restored = client.call_tool(call("desigma_get_node", json!({"node_id":medium_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
@@ -936,6 +953,9 @@ async fn component_properties_round_trip_over_stdio() {
         let bind_show =
             client.call_tool(call("desigma_bind_component_property", json!({"node_id":icon_id,"field":"visible","property":"Show icon"}))).await.unwrap();
         assert_eq!(bind_show.is_error, Some(false), "{bind_show:?}");
+        let bind_again =
+            client.call_tool(call("desigma_bind_component_property", json!({"node_id":icon_id,"field":"visible","property":"Show icon"}))).await.unwrap();
+        assert_eq!(bind_again.structured_content.unwrap()["changed"], false, "rebinding the same property is a no-op");
         let bind_label =
             client.call_tool(call("desigma_bind_component_property", json!({"node_id":label_id,"field":"characters","property":"Label"}))).await.unwrap();
         assert_eq!(bind_label.is_error, Some(false), "{bind_label:?}");
@@ -965,6 +985,15 @@ async fn component_properties_round_trip_over_stdio() {
         let label_node = client.call_tool(call("desigma_get_node", json!({"node_id":label_i}))).await.unwrap().structured_content.unwrap()["node"].clone();
         assert_eq!(label_node["kind"]["Text"]["content"], "Label");
 
+        // Clearing the explicit value lets a default change reach this instance.
+        client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Show icon"}))).await.unwrap();
+        let new_default =
+            client.call_tool(call("desigma_update_component_property", json!({"owner_id":card_id,"name":"Show icon","default":false}))).await.unwrap();
+        assert_eq!(new_default.is_error, Some(false), "{new_default:?}");
+        let icon_after_default =
+            client.call_tool(call("desigma_get_node", json!({"node_id":icon_i}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(icon_after_default["visible"], false, "the new default reaches an instance without an explicit value");
+
         let renamed = client
             .call_tool(call("desigma_update_component_property", json!({"owner_id":card_id,"name":"Label","new_name":"Caption","default":"Caption"})))
             .await
@@ -989,11 +1018,46 @@ async fn component_properties_round_trip_over_stdio() {
             .await
             .unwrap();
         assert_eq!(swap.is_error, Some(false), "{swap:?}");
-        let swapped = client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Icon swap","value":alt_id}))).await.unwrap();
+
+        // A nested instance root inside the main component is the binding target
+        // for Instance Swap; it is linked but not a mirrored descendant.
+        let slot = client.call_tool(call("desigma_create_instance", json!({"component_id":alt_id,"parent_id":card_id}))).await.unwrap();
+        assert_eq!(slot.is_error, Some(false), "{slot:?}");
+        let slot_id = slot.structured_content.unwrap()["instance_id"].clone();
+        let bind_slot = client
+            .call_tool(call("desigma_bind_component_property", json!({"node_id":slot_id,"field":"main_component","property":"Icon swap"})))
+            .await
+            .unwrap();
+        assert_eq!(bind_slot.is_error, Some(false), "{bind_slot:?}");
+        assert_eq!(bind_slot.structured_content.unwrap()["changed"], true);
+
+        let alt2 = client.call_tool(call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":"Alt2","width":20,"height":20}))).await.unwrap();
+        let alt2_id = alt2.structured_content.unwrap()["node"]["id"].clone();
+        client.call_tool(call("desigma_create_component", json!({"node_id":alt2_id}))).await.unwrap();
+        let swapped = client.call_tool(call("desigma_set_instance_property", json!({"node_id":instance_id,"name":"Icon swap","value":alt2_id}))).await.unwrap();
         assert_eq!(swapped.is_error, Some(false), "{swapped:?}");
+        let outer_kids =
+            client.call_tool(call("desigma_list_nodes", json!({"parent_id":instance_id}))).await.unwrap().structured_content.unwrap()["nodes"].clone();
+        let slot_copy = outer_kids.as_array().unwrap().iter().find(|node| node["name"] == "Alt" || node["name"] == "Alt2").expect("nested instance copy")
+            ["node_id"]
+            .clone();
+        let slot_node = client.call_tool(call("desigma_get_node", json!({"node_id":slot_copy}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert_eq!(slot_node["kind"]["Instance"]["component"], alt2_id, "instance swap follows the property value");
 
         let variant_prop = client.call_tool(call("desigma_add_component_property", json!({"owner_id":card_id,"name":"State","kind":"variant"}))).await.unwrap();
         assert_eq!(variant_prop.is_error, Some(true), "variant properties are derived");
+        let duplicate =
+            client.call_tool(call("desigma_add_component_property", json!({"owner_id":card_id,"name":"Show icon","kind":"boolean"}))).await.unwrap();
+        assert_eq!(duplicate.is_error, Some(true), "duplicate property names are refused");
+        let incompatible =
+            client.call_tool(call("desigma_bind_component_property", json!({"node_id":icon_id,"field":"visible","property":"Caption"}))).await.unwrap();
+        assert_eq!(incompatible.is_error, Some(true), "text properties cannot bind to visibility");
+        let temporary =
+            client.call_tool(call("desigma_add_component_property", json!({"owner_id":card_id,"name":"Temporary","kind":"boolean"}))).await.unwrap();
+        assert_eq!(temporary.is_error, Some(false), "{temporary:?}");
+        client.call_tool(call("desigma_undo", json!({}))).await.unwrap();
+        let after_undo = client.call_tool(call("desigma_get_node", json!({"node_id":card_id}))).await.unwrap().structured_content.unwrap()["node"].clone();
+        assert!(after_undo["component"]["props"].as_array().unwrap().iter().all(|def| def["name"] != "Temporary"), "property creation is undoable");
 
         client.call_tool(call("desigma_delete_component_property", json!({"owner_id":card_id,"name":"Icon swap"}))).await.unwrap();
         let after_delete =
