@@ -68,6 +68,9 @@ pub(crate) fn convert_tree(tree: &usvg::Tree, name: &str, shapes: HashMap<String
     } else {
         c.convert_group(g, 0, Attrs::with_pre(Affine::IDENTITY));
     }
+    for n in c.nodes.iter_mut().skip(1) {
+        n.constraints = Constraints { horizontal: Constraint::Scale, vertical: Constraint::Scale };
+    }
     SvgNodes { nodes: c.nodes, images: c.images }
 }
 
