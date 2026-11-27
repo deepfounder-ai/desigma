@@ -270,6 +270,7 @@ impl App {
         match install::commit(&prepared) {
             Ok(launch) => {
                 install::stash(launch);
+                self.force_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             Err(e) => {

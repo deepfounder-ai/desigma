@@ -764,11 +764,16 @@ impl Shell {
         self.app.poll_install(&ctx);
         self.drive_screenshot(&ctx);
         if ctx.input(|i| i.viewport().close_requested()) {
-            crate::decks::ui::flush_notes(&mut self.app);
-            self.app.save_close_version();
-            self.app.flush_autosave();
-            // "Restart to update": everything is saved, so the new version can start now
-            crate::updater::install::run_stashed();
+            if !self.app.force_close && self.app.home.is_none() && self.app.has_unsaved_work() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.app.pending_close = true;
+            } else {
+                crate::decks::ui::flush_notes(&mut self.app);
+                self.app.save_close_version();
+                self.app.flush_autosave();
+                // "Restart to update": everything is saved, so the new version can start now
+                crate::updater::install::run_stashed();
+            }
         }
         self.app.scrub_sync(&ctx);
         if self.app.home.is_some() {
@@ -783,6 +788,9 @@ impl Shell {
         self.app.motion_tick(&ctx);
         if self.app.proto.present.is_some() {
             crate::present::show(&mut self.app, ui);
+            if self.app.pending_close {
+                crate::unsaved::dialog(&mut self.app, &ctx);
+            }
             return;
         }
         self.handle_keys(&ctx);

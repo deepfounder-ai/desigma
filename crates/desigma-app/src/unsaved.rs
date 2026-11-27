@@ -61,18 +61,20 @@ enum Answer {
 
 pub fn dialog(app: &mut App, ctx: &Context) {
     let open = app.pending_open.clone();
-    if open.is_none() && !app.updater.pending_restart {
+    if open.is_none() && !app.updater.pending_restart && !app.pending_close {
         return;
     }
     let screen = ctx.content_rect();
     let esc = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
     const W: f32 = 420.0;
     const PAD: f32 = 20.0;
-    let body = match (app.collab.active(), &open) {
-        (true, _) => "You are in a live session. Opening this leaves it.",
-        (false, Some(Open::Link(_))) => "Joining a session replaces this document.",
-        (false, Some(Open::File(_))) => "Opening this file replaces the current document.",
-        (false, None) => "Restarting to install the update closes this document.",
+    let body = match (app.collab.active(), &open, app.updater.pending_restart) {
+        (true, Some(_), _) => "You are in a live session. Opening this leaves it.",
+        (true, None, _) => "You are in a live session. Closing this window leaves it.",
+        (false, Some(Open::Link(_)), _) => "Joining a session replaces this document.",
+        (false, Some(Open::File(_)), _) => "Opening this file replaces the current document.",
+        (false, None, true) => "Restarting to install the update closes this document.",
+        (false, None, false) => "Closing this window discards unsaved changes.",
     };
     let rect = Rect::from_center_size(screen.center() - Vec2::new(0.0, 24.0), Vec2::new(W, PAD + 24.0 + 12.0 + 44.0 + 32.0 + PAD));
     let mut answer = esc.then_some(Answer::Cancel);
@@ -108,19 +110,34 @@ pub fn dialog(app: &mut App, ctx: &Context) {
         Some(Answer::Cancel) => {
             app.pending_open = None;
             app.updater.pending_restart = false;
+            app.pending_close = false;
         }
         Some(Answer::Discard) => {
+            let closing = app.pending_close && open.is_none() && !app.updater.pending_restart;
             app.pending_open = None;
             app.updater.pending_restart = false;
-            app.proceed(open);
+            app.pending_close = false;
+            if closing {
+                app.force_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                app.proceed(open);
+            }
         }
         Some(Answer::Save) => {
+            let closing = app.pending_close && open.is_none() && !app.updater.pending_restart;
             app.pending_open = None;
             app.updater.pending_restart = false;
+            app.pending_close = false;
             app.save(false);
             // a cancelled Save as… (or a failed save) keeps the work and the document
             if !app.edits_unsaved() {
-                app.proceed(open);
+                if closing {
+                    app.force_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    app.proceed(open);
+                }
             }
         }
     }
