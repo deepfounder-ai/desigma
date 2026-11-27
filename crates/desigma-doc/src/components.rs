@@ -166,6 +166,26 @@ pub fn components_of(doc: &Document, owner: NodeId) -> Vec<NodeId> {
     }
 }
 
+/// The component set containing the variant `id`, if `id` is a variant.
+pub fn variant_set(doc: &Document, id: NodeId) -> Option<NodeId> {
+    let node = doc.get(id)?;
+    if !matches!(node.kind, NodeKind::Component(_)) {
+        return None;
+    }
+    node.parent.filter(|parent| matches!(doc.get(*parent).map(|p| &p.kind), Some(NodeKind::ComponentSet(_))))
+}
+
+/// Finds the variant in `set` whose property values match `values` exactly.
+pub fn find_variant(doc: &Document, set: NodeId, values: &[(String, String)]) -> Option<NodeId> {
+    components_of(doc, set).into_iter().find(|id| {
+        doc.get(*id).is_some_and(|node| {
+            let actual: BTreeMap<_, _> = parse_variant_name(&node.name).into_iter().collect();
+            let wanted: BTreeMap<_, _> = values.iter().cloned().collect();
+            actual == wanted
+        })
+    })
+}
+
 /// The main components `id` sits inside: as a layer of them, or in a copy of them.
 fn enclosing_components(doc: &Document, id: Option<NodeId>) -> BTreeSet<NodeId> {
     let mut enclosing = BTreeSet::new();
@@ -1045,11 +1065,38 @@ pub fn bind_prop(doc: &mut Document, node: NodeId, field: OverrideField, prop: O
 // Variants
 // ---------------------------------------------------------------------------
 
+const VARIANT_PAD: f32 = 24.0;
+const VARIANT_GAP: f32 = 16.0;
+
+/// Grid positions and set size for the given variant sizes.
+fn variant_grid(sizes: &[Vec2], cols: usize) -> (Vec<(f32, f32)>, Vec2) {
+    let cols = cols.max(1);
+    let (mut x, mut y, mut row_h, mut max_x) = (VARIANT_PAD, VARIANT_PAD, 0.0f32, 0.0f32);
+    let mut positions = Vec::with_capacity(sizes.len());
+    for (index, size) in sizes.iter().enumerate() {
+        if index > 0 && index % cols == 0 {
+            x = VARIANT_PAD;
+            y += row_h + VARIANT_GAP;
+            row_h = 0.0;
+        }
+        positions.push((x, y));
+        x += size.x + VARIANT_GAP;
+        max_x = max_x.max(x - VARIANT_GAP);
+        row_h = row_h.max(size.y);
+    }
+    (positions, Vec2::new(max_x + VARIANT_PAD, y + row_h + VARIANT_PAD))
+}
+
 /// Groups components into a new component set (Figma "Combine as variants").
 /// Components whose name is not `Prop=Value` become `Property 1=<name>`; the
 /// set gets a Variant property definition per distinct property and the
 /// variants are laid out in a grid.
 pub fn combine_as_variants(doc: &mut Document, components: &[NodeId]) -> Command {
+    combine_as_variants_with_name(doc, components, None)
+}
+
+/// Like [`combine_as_variants`], with an optional name for the new set.
+pub fn combine_as_variants_with_name(doc: &mut Document, components: &[NodeId], name: Option<&str>) -> Command {
     let comps: Vec<NodeId> = components.iter().copied().filter(|c| matches!(doc.get(*c).map(|n| &n.kind), Some(NodeKind::Component(_)))).collect();
     let Some(&first) = comps.first() else { return nothing() };
     let Some(parent) = doc.get(first).and_then(|n| n.parent) else { return nothing() };
@@ -1087,31 +1134,16 @@ pub fn combine_as_variants(doc: &mut Document, components: &[NodeId]) -> Command
 
     // Grid layout: columns = options of the last property (a single row for one property).
     let cols = if defs.len() > 1 { defs.last().map(|(_, o)| o.len()).unwrap_or(1).max(1) } else { comps.len() };
-    const PAD: f32 = 24.0;
-    const GAP: f32 = 16.0;
-    let mut pos = Vec::new();
-    let (mut x, mut y, mut row_h, mut max_x) = (PAD, PAD, 0.0f32, 0.0f32);
-    for (k, id) in comps.iter().enumerate() {
-        if k > 0 && k % cols == 0 {
-            x = PAD;
-            y += row_h + GAP;
-            row_h = 0.0;
-        }
-        let sz = doc.get(*id).unwrap().size;
-        pos.push((x, y));
-        x += sz.x + GAP;
-        max_x = max_x.max(x - GAP);
-        row_h = row_h.max(sz.y);
-    }
-    let total_h = y + row_h + PAD;
+    let sizes: Vec<Vec2> = comps.iter().map(|id| doc.get(*id).unwrap().size).collect();
+    let (pos, set_size) = variant_grid(&sizes, cols);
     let origin = doc.get(first).unwrap().transform.translation();
 
     let sid = doc.alloc_id();
     let mut set = Node::new(sid, NodeKind::ComponentSet(FrameProps::default()));
     let base = doc.get(first).unwrap().name.clone();
-    set.name = if parse_variant_name(&base).is_empty() { base } else { "Component set".to_string() };
+    set.name = name.map(str::to_string).unwrap_or_else(|| if parse_variant_name(&base).is_empty() { base } else { "Component set".to_string() });
     set.transform = Affine::translate(origin.x, origin.y);
-    set.size = Vec2::new(max_x + PAD, total_h);
+    set.size = set_size;
     set.fills = Vec::new();
     set.component.props = props;
 
@@ -1124,6 +1156,546 @@ pub fn combine_as_variants(doc: &mut Document, components: &[NodeId]) -> Command
         cmds.push(Command::Update { node: Box::new(n) });
     }
     Command::Batch(cmds)
+}
+
+/// How `add_variant` obtains the new variant's content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddVariantMode {
+    /// Duplicate the source component; the source and its instances stay put.
+    Copy,
+    /// Move a standalone main component into the set.
+    Move,
+}
+
+fn component_error(message: impl Into<String>) -> DocError {
+    DocError::InvalidComponent(message.into())
+}
+
+fn variant_defs(set: &Node) -> Vec<ComponentPropDef> {
+    set.component.props.iter().filter(|def| matches!(def.kind, PropKind::Variant { .. })).cloned().collect()
+}
+
+/// Resolves a property map against the set's variant dimensions. The result is
+/// ordered by the set definition, so the generated variant name is canonical.
+fn resolve_variant_values(set: &Node, values: &[(String, String)]) -> Result<Vec<(String, String)>, DocError> {
+    let defs = variant_defs(set);
+    if defs.is_empty() {
+        return Err(component_error("component set has no variant properties"));
+    }
+    let mut supplied = BTreeMap::new();
+    for (name, value) in values {
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() || value.is_empty() {
+            return Err(component_error("variant property names and values must not be empty"));
+        }
+        if value.contains(',') || value.contains('=') {
+            return Err(component_error(format!("variant value '{value}' cannot contain ',' or '='")));
+        }
+        if supplied.insert(name.to_string(), value.to_string()).is_some() {
+            return Err(component_error(format!("variant property '{name}' appears more than once")));
+        }
+    }
+    let mut ordered = Vec::with_capacity(defs.len());
+    for def in defs {
+        let Some(value) = supplied.remove(&def.name) else {
+            return Err(component_error(format!("missing variant property '{}'", def.name)));
+        };
+        ordered.push((def.name, value));
+    }
+    if let Some(extra) = supplied.keys().next() {
+        return Err(component_error(format!("unknown variant property '{extra}'")));
+    }
+    Ok(ordered)
+}
+
+fn ensure_variant_options(set: &mut Node, values: &[(String, String)]) -> bool {
+    let mut changed = false;
+    for (name, value) in values {
+        if let Some(def) = set.component.props.iter_mut().find(|def| def.name == name.as_str()) {
+            if let PropKind::Variant { options } = &mut def.kind {
+                if !options.iter().any(|option| option == value) {
+                    options.push(value.clone());
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// Lays the set's variants out as a grid, matching the one-shot combine rules.
+/// The scratch document must already contain every variant and its final size.
+fn layout_variant_set(c: &mut Ctx, set: NodeId) {
+    let Some(set_node) = c.s.get(set).cloned() else { return };
+    let defs = variant_defs(&set_node);
+    let variants = components_of(&c.s, set);
+    if variants.is_empty() {
+        return;
+    }
+    let cols = if defs.len() > 1 {
+        defs.last()
+            .and_then(|def| match &def.kind {
+                PropKind::Variant { options } => Some(options.len()),
+                _ => None,
+            })
+            .unwrap_or(1)
+            .max(1)
+    } else {
+        variants.len()
+    };
+    let sizes: Vec<Vec2> = variants.iter().filter_map(|id| c.s.get(*id).map(|node| node.size)).collect();
+    let (positions, set_size) = variant_grid(&sizes, cols);
+    for (id, (x, y)) in variants.iter().zip(positions) {
+        let Some(mut node) = c.s.get(*id).cloned() else { continue };
+        node.transform = Affine::translate(x, y);
+        c.update(node);
+    }
+    if let Some(mut node) = c.s.get(set).cloned() {
+        node.size = set_size;
+        c.update(node);
+    }
+}
+
+/// Adds a variant to an existing set. `values` must cover every variant
+/// property the set currently exposes. The returned command also relayouts the
+/// set and synchronizes its instances.
+pub fn add_variant(doc: &mut Document, set: NodeId, source: NodeId, mode: AddVariantMode, values: &[(String, String)]) -> Result<Command, DocError> {
+    let set_node = doc.get(set).ok_or(DocError::NotFound(set))?;
+    if !matches!(set_node.kind, NodeKind::ComponentSet(_)) {
+        return Err(component_error("target is not a component set"));
+    }
+    let source_node = doc.get(source).ok_or(DocError::NotFound(source))?;
+    if !matches!(source_node.kind, NodeKind::Component(_)) {
+        return Err(component_error("source must be a main component"));
+    }
+    if source_node.component.source.is_some() {
+        return Err(component_error("source must be a main component, not a mirrored layer"));
+    }
+    if mode == AddVariantMode::Move {
+        let Some(parent) = source_node.parent else { return Err(component_error("source has no parent")) };
+        if doc.get(parent).is_some_and(|node| matches!(node.kind, NodeKind::ComponentSet(_))) {
+            return Err(component_error("moving a variant out of its component set is not supported"));
+        }
+        if would_nest_in_itself(doc, source, Some(set)) {
+            return Err(component_error("source contains the target component set"));
+        }
+    }
+    let ordered = resolve_variant_values(set_node, values)?;
+    let name = variant_name(&ordered);
+    let new_values: Vec<(String, String)> = ordered.clone();
+    if components_of(doc, set).into_iter().any(|component| same_variant(&parse_variant_name(&doc.get(component).unwrap().name), &new_values)) {
+        return Err(component_error(format!("a variant with the values '{name}' already exists")));
+    }
+
+    let mut c = Ctx::new(doc);
+    match mode {
+        AddVariantMode::Copy => {
+            let mut nodes = copy_tree(&mut c.s, source, false);
+            let Some(root) = nodes.first_mut() else { return Err(component_error("source component could not be copied")) };
+            root.name = name;
+            root.component.source = None;
+            root.component.overrides.clear();
+            root.component.values.clear();
+            let index = c.s.get(set).map(|node| node.children.len()).unwrap_or(0);
+            c.push(Command::Insert { parent: set, index, nodes });
+        }
+        AddVariantMode::Move => {
+            let index = c.s.get(set).map(|node| node.children.len()).unwrap_or(0);
+            c.push(Command::Reparent { id: source, parent: set, index });
+            if let Some(mut node) = c.s.get(source).cloned() {
+                node.name = name;
+                c.update(node);
+            }
+        }
+    }
+    if let Some(mut set_node) = c.s.get(set).cloned() {
+        if ensure_variant_options(&mut set_node, &ordered) {
+            c.update(set_node);
+        }
+    }
+    layout_variant_set(&mut c, set);
+    sync_component(&mut c, set);
+    Ok(c.finish(doc))
+}
+
+/// Removes an unused variant. Instances and the last remaining variant block
+/// the edit; afterwards options and defaults are pruned and the set is relaid
+/// out.
+pub fn remove_variant(doc: &mut Document, variant: NodeId) -> Result<Command, DocError> {
+    let node = doc.get(variant).ok_or(DocError::NotFound(variant))?;
+    let set = node.parent.ok_or_else(|| component_error("variant has no component set"))?;
+    let set_node = doc.get(set).ok_or(DocError::NotFound(set))?;
+    if !matches!(set_node.kind, NodeKind::ComponentSet(_)) {
+        return Err(component_error("variant's parent is not a component set"));
+    }
+    let components = components_of(doc, set);
+    if !components.contains(&variant) {
+        return Err(component_error("node is not a variant of this component set"));
+    }
+    if components.len() <= 1 {
+        return Err(component_error("a component set needs at least one variant"));
+    }
+    let instances = instances_of(doc, variant);
+    if !instances.is_empty() {
+        return Err(component_error(format!("variant has {} instance(s); swap or detach them first", instances.len())));
+    }
+
+    let mut c = Ctx::new(doc);
+    c.push(Command::Remove { id: variant });
+    let mut used: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for component in components_of(&c.s, set) {
+        let Some(node) = c.s.get(component) else { continue };
+        for (name, value) in parse_variant_name(&node.name) {
+            used.entry(name).or_default().insert(value);
+        }
+    }
+    let mut removed_props = Vec::new();
+    if let Some(mut set_node) = c.s.get(set).cloned() {
+        let mut kept = Vec::new();
+        for mut def in std::mem::take(&mut set_node.component.props) {
+            let prop_name = def.name.clone();
+            if let PropKind::Variant { ref mut options } = def.kind {
+                options.retain(|option| used.get(&prop_name).is_some_and(|values| values.contains(option)));
+                if options.is_empty() {
+                    removed_props.push(prop_name);
+                    continue;
+                }
+                if !matches!(&def.default, PropValue::Variant(value) if options.contains(value)) {
+                    def.default = PropValue::Variant(options[0].clone());
+                }
+            }
+            kept.push(def);
+        }
+        set_node.component.props = kept;
+        c.update(set_node);
+    }
+    if !removed_props.is_empty() {
+        let instances: Vec<NodeId> = components_of(&c.s, set).into_iter().flat_map(|component| instances_of(&c.s, component)).collect();
+        for instance in instances {
+            let Some(mut node) = c.s.get(instance).cloned() else { continue };
+            let mut changed = false;
+            for name in &removed_props {
+                changed |= node.component.values.remove(name).is_some();
+            }
+            if changed {
+                c.update(node);
+            }
+        }
+    }
+    layout_variant_set(&mut c, set);
+    sync_component(&mut c, set);
+    Ok(c.finish(doc))
+}
+
+/// Renames a variant by replacing one or more of its property values. The
+/// component name, set options, default, and instances that selected this
+/// variant follow in the same undo step.
+pub fn rename_variant(doc: &mut Document, variant: NodeId, values: &[(String, String)]) -> Result<Command, DocError> {
+    let node = doc.get(variant).ok_or(DocError::NotFound(variant))?;
+    if !matches!(node.kind, NodeKind::Component(_)) {
+        return Err(component_error("target is not a main component"));
+    }
+    let set = node.parent.ok_or_else(|| component_error("variant has no component set"))?;
+    let set_node = doc.get(set).ok_or(DocError::NotFound(set))?;
+    if !matches!(set_node.kind, NodeKind::ComponentSet(_)) {
+        return Err(component_error("variant's parent is not a component set"));
+    }
+    let ordered = resolve_variant_values(set_node, values)?;
+    let old_pairs = parse_variant_name(&node.name);
+    if old_pairs.is_empty() {
+        return Err(component_error("variant name has no property values"));
+    }
+    let mut changes: Vec<(String, String, String)> = Vec::new();
+    for (name, new_value) in &ordered {
+        let Some((_, old_value)) = old_pairs.iter().find(|(key, _)| key == name) else {
+            return Err(component_error(format!("variant has no value for property '{name}'")));
+        };
+        if old_value != new_value {
+            changes.push((name.clone(), old_value.clone(), new_value.clone()));
+        }
+    }
+    if changes.is_empty() {
+        return Ok(nothing());
+    }
+    let new_name = variant_name(&ordered);
+    for component in components_of(doc, set) {
+        if component != variant && same_variant(&parse_variant_name(&doc.get(component).unwrap().name), &ordered) {
+            return Err(component_error(format!("a variant with the values '{new_name}' already exists")));
+        }
+    }
+
+    let mut c = Ctx::new(doc);
+    let mut used_by_others: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for component in components_of(&c.s, set).into_iter().filter(|component| *component != variant) {
+        let Some(node) = c.s.get(component) else { continue };
+        for (name, value) in parse_variant_name(&node.name) {
+            used_by_others.entry(name).or_default().insert(value);
+        }
+    }
+    if let Some(mut set_node) = c.s.get(set).cloned() {
+        for (name, old_value, new_value) in &changes {
+            if let Some(def) = set_node.component.props.iter_mut().find(|def| def.name == *name) {
+                if let PropKind::Variant { ref mut options } = def.kind {
+                    let still_used = used_by_others.get(name).is_some_and(|values| values.contains(old_value));
+                    if still_used {
+                        if !options.iter().any(|option| option == new_value) {
+                            options.push(new_value.clone());
+                        }
+                    } else if let Some(index) = options.iter().position(|option| option == old_value) {
+                        if options.iter().any(|option| option == new_value) {
+                            options.remove(index);
+                        } else {
+                            options[index] = new_value.clone();
+                        }
+                    } else if !options.iter().any(|option| option == new_value) {
+                        options.push(new_value.clone());
+                    }
+                }
+                if matches!(&def.default, PropValue::Variant(value) if value == old_value) {
+                    def.default = PropValue::Variant(new_value.clone());
+                }
+            }
+        }
+        c.update(set_node);
+    }
+    if let Some(mut node) = c.s.get(variant).cloned() {
+        node.name = new_name;
+        c.update(node);
+    }
+    for instance in instances_of(&c.s, variant) {
+        let Some(mut node) = c.s.get(instance).cloned() else { continue };
+        let mut changed = false;
+        for (name, old_value, new_value) in &changes {
+            if matches!(node.component.values.get(name), Some(PropValue::Variant(value)) if value == old_value) {
+                node.component.values.insert(name.clone(), PropValue::Variant(new_value.clone()));
+                changed = true;
+            }
+        }
+        if changed {
+            c.update(node);
+        }
+    }
+    sync_component(&mut c, set);
+    Ok(c.finish(doc))
+}
+
+fn property_owner(doc: &Document, owner: NodeId) -> Result<NodeId, DocError> {
+    let node = doc.get(owner).ok_or(DocError::NotFound(owner))?;
+    match node.kind {
+        NodeKind::ComponentSet(_) => Ok(owner),
+        NodeKind::Component(_) => {
+            Ok(node.parent.filter(|parent| doc.get(*parent).is_some_and(|p| matches!(p.kind, NodeKind::ComponentSet(_)))).unwrap_or(owner))
+        }
+        _ => Err(component_error("owner must be a main component or component set")),
+    }
+}
+
+fn property_def(doc: &Document, owner: NodeId, name: &str) -> Result<ComponentPropDef, DocError> {
+    let node = doc.get(owner).ok_or(DocError::NotFound(owner))?;
+    node.component.props.iter().find(|def| def.name == name).cloned().ok_or_else(|| component_error(format!("component property '{name}' not found")))
+}
+
+fn validate_property_default(doc: &Document, kind: &PropKind, default: &PropValue) -> Result<(), DocError> {
+    match (kind, default) {
+        (PropKind::Boolean, PropValue::Bool(_)) | (PropKind::Text, PropValue::Text(_)) => Ok(()),
+        (PropKind::InstanceSwap { preferred }, PropValue::Instance(id)) => {
+            if !matches!(doc.get(*id).map(|node| &node.kind), Some(NodeKind::Component(_))) {
+                return Err(component_error("instance-swap default must be a main component"));
+            }
+            for preferred in preferred {
+                if !matches!(doc.get(*preferred).map(|node| &node.kind), Some(NodeKind::Component(_))) {
+                    return Err(component_error("preferred components must be main components"));
+                }
+            }
+            Ok(())
+        }
+        (PropKind::Variant { .. }, _) => Err(component_error("variant properties are derived; add or rename a variant instead")),
+        _ => Err(component_error("default value does not match the component property kind")),
+    }
+}
+
+/// Adds a Boolean, Text, or Instance Swap property to a component or set.
+pub fn add_component_property(doc: &mut Document, owner: NodeId, name: &str, kind: PropKind, default: PropValue) -> Result<Command, DocError> {
+    let owner = property_owner(doc, owner)?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(component_error("component property name must not be empty"));
+    }
+    if matches!(kind, PropKind::Variant { .. }) {
+        return Err(component_error("variant properties are derived; add or rename a variant instead"));
+    }
+    let node = doc.get(owner).ok_or(DocError::NotFound(owner))?;
+    if node.component.props.iter().any(|def| def.name == name) {
+        return Err(component_error(format!("component property '{name}' already exists")));
+    }
+    validate_property_default(doc, &kind, &default)?;
+    Ok(add_prop(doc, owner, ComponentPropDef { name: name.to_string(), kind, default }))
+}
+
+/// Updates a Boolean, Text, or Instance Swap property's name and/or default.
+/// The kind is immutable. Renaming updates bindings and instance values.
+pub fn update_component_property(
+    doc: &mut Document,
+    owner: NodeId,
+    name: &str,
+    new_name: Option<&str>,
+    default: Option<PropValue>,
+) -> Result<Command, DocError> {
+    let owner = property_owner(doc, owner)?;
+    let def = property_def(doc, owner, name)?;
+    if matches!(def.kind, PropKind::Variant { .. }) {
+        return Err(component_error("variant properties are derived; rename the variants instead"));
+    }
+    let new_name = new_name.map(str::trim).filter(|name| !name.is_empty());
+    let rename = new_name.filter(|new_name| *new_name != name);
+    if let Some(new_name) = rename {
+        if doc.get(owner).is_some_and(|node| node.component.props.iter().any(|def| def.name == new_name)) {
+            return Err(component_error(format!("component property '{new_name}' already exists")));
+        }
+    }
+    if let Some(default) = &default {
+        validate_property_default(doc, &def.kind, default)?;
+    }
+    if rename.is_none() && default.is_none() {
+        return Ok(nothing());
+    }
+
+    let mut c = Ctx::new(doc);
+    if let Some(new_name) = rename {
+        let rename_cmd = rename_prop(doc, owner, name, new_name);
+        if !matches!(&rename_cmd, Command::Batch(items) if items.is_empty()) {
+            c.push(rename_cmd);
+        }
+    }
+    if let Some(default) = default {
+        let target = rename.unwrap_or(name);
+        if let Some(mut node) = c.s.get(owner).cloned() {
+            if let Some(def) = node.component.props.iter_mut().find(|def| def.name == target) {
+                def.default = default.clone();
+            }
+            c.update(node);
+        }
+        // A property default is the main component's value. Update the bound
+        // layers before syncing so instances without an explicit value follow
+        // it, while local overrides and explicit instance values still win.
+        let mut ids = Vec::new();
+        for component in components_of(&c.s, owner) {
+            ids.extend(subtree_ids(&c.s, component));
+        }
+        for id in ids {
+            if instance_root_of(&c.s, id).is_some_and(|root| root != id) {
+                continue;
+            }
+            let Some(node) = c.s.get(id).cloned() else { continue };
+            let mut changed = false;
+            for (field, prop) in node.component.bindings.clone() {
+                if prop != target {
+                    continue;
+                }
+                match (field, &default) {
+                    (OverrideField::Visible, PropValue::Bool(visible)) => {
+                        if node.visible != *visible {
+                            let mut node = node.clone();
+                            node.visible = *visible;
+                            c.update(node);
+                        }
+                    }
+                    (OverrideField::Characters, PropValue::Text(text)) => {
+                        let mut node = node.clone();
+                        if let NodeKind::Text(props) = &mut node.kind {
+                            if props.content != *text {
+                                props.content = text.clone();
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            c.update(node);
+                        }
+                    }
+                    (OverrideField::MainComponent, PropValue::Instance(component)) => {
+                        if matches!(c.s.get(*component).map(|node| &node.kind), Some(NodeKind::Component(_))) {
+                            swap_main(&mut c, id, *component);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    sync_component(&mut c, owner);
+    Ok(c.finish(doc))
+}
+
+/// Deletes a Boolean, Text, or Instance Swap property with its bindings and
+/// instance values.
+pub fn delete_component_property(doc: &mut Document, owner: NodeId, name: &str) -> Result<Command, DocError> {
+    let owner = property_owner(doc, owner)?;
+    let def = property_def(doc, owner, name)?;
+    if matches!(def.kind, PropKind::Variant { .. }) {
+        return Err(component_error("variant properties are derived; remove or rename the variants instead"));
+    }
+    Ok(delete_prop(doc, owner, name))
+}
+
+/// Binds a layer field to a component property, or unbinds it when `property`
+/// is `None`. Boolean properties drive visibility, Text drives characters, and
+/// Instance Swap drives the main component.
+pub fn bind_component_property(doc: &mut Document, node: NodeId, field: OverrideField, property: Option<&str>) -> Result<Command, DocError> {
+    let target = doc.get(node).ok_or(DocError::NotFound(node))?;
+    // Instance roots are valid binding targets (an Instance Swap slot is a
+    // nested instance). Mirrored descendants are not: they are owned by the
+    // instance and would be overwritten on the next sync.
+    if target.component.source.is_some() && instance_root_of(doc, node) != Some(node) {
+        return Err(component_error("cannot bind a mirrored layer inside an instance"));
+    }
+    let Some(component) = enclosing_component(doc, node) else {
+        return Err(component_error("property bindings must target a layer inside a main component"));
+    };
+    if let Some(property) = property {
+        let def = prop_defs(doc, component)
+            .into_iter()
+            .find(|def| def.name == property)
+            .ok_or_else(|| component_error(format!("component property '{property}' not found")))?;
+        let compatible = matches!(
+            (&def.kind, field),
+            (PropKind::Boolean, OverrideField::Visible)
+                | (PropKind::Text, OverrideField::Characters)
+                | (PropKind::InstanceSwap { .. }, OverrideField::MainComponent)
+        );
+        if !compatible {
+            return Err(component_error("field is not compatible with the component property kind"));
+        }
+    }
+    Ok(bind_prop(doc, node, field, property))
+}
+
+/// Sets or clears a component property value on an instance.
+pub fn set_instance_property(doc: &mut Document, instance: NodeId, name: &str, value: Option<PropValue>) -> Result<Command, DocError> {
+    let node = doc.get(instance).ok_or(DocError::NotFound(instance))?;
+    if !matches!(node.kind, NodeKind::Instance { .. }) {
+        return Err(component_error("target is not an instance"));
+    }
+    let component = instance_component(node).ok_or_else(|| component_error("instance has no main component"))?;
+    let def =
+        prop_defs(doc, component).into_iter().find(|def| def.name == name).ok_or_else(|| component_error(format!("component property '{name}' not found")))?;
+    if let Some(value) = &value {
+        match (&def.kind, value) {
+            (PropKind::Boolean, PropValue::Bool(_)) | (PropKind::Text, PropValue::Text(_)) => {}
+            (PropKind::Variant { options }, PropValue::Variant(option)) => {
+                if !options.contains(option) {
+                    return Err(component_error(format!("variant option '{option}' does not exist")));
+                }
+            }
+            (PropKind::InstanceSwap { .. }, PropValue::Instance(id)) => {
+                if !matches!(doc.get(*id).map(|node| &node.kind), Some(NodeKind::Component(_))) {
+                    return Err(component_error("instance-swap value must be a main component"));
+                }
+            }
+            _ => return Err(component_error("value does not match the component property kind")),
+        }
+    }
+    Ok(set_instance_prop(doc, instance, name, value))
 }
 
 // ---------------------------------------------------------------------------

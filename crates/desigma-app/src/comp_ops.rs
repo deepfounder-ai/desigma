@@ -2,7 +2,7 @@
 //! sync at commit time, and the selection commands (create, detach, swap,
 //! variants, properties). Pure logic lives in `desigma_doc::components`.
 
-use crate::app::App;
+use crate::app::{App, VariantEdit, VariantEditKind};
 use crate::canvas::create::container_at;
 use crate::edit::Tx;
 use crate::layout;
@@ -126,6 +126,134 @@ impl App {
         }
         self.run_tx(tx);
         self.selection = done;
+    }
+
+    /// Values that identify a variant by its component name.
+    fn variant_values(&self, variant: NodeId) -> Vec<(String, String)> {
+        self.doc.get(variant).map(|node| parse_variant_name(&node.name)).unwrap_or_default()
+    }
+
+    /// Default values for a new variant in `set`: the first option of each
+    /// variant property.
+    pub(crate) fn variant_defaults(&self, set: NodeId) -> Vec<(String, String)> {
+        let Some(node) = self.doc.get(set) else { return Vec::new() };
+        node.component
+            .props
+            .iter()
+            .filter_map(|def| match &def.kind {
+                PropKind::Variant { options } => options.first().map(|option| (def.name.clone(), option.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn open_add_variant_copy(&mut self, set: NodeId, source: NodeId) {
+        let mut values = self.variant_values(source);
+        if let Some((_, value)) = values.first_mut() {
+            value.push_str(" Copy");
+        }
+        self.ui.variant_edit = Some(VariantEdit { kind: VariantEditKind::AddCopy { set, source }, values, error: None });
+    }
+
+    pub fn open_add_variant_move(&mut self, source: NodeId) {
+        self.ui.variant_edit = Some(VariantEdit { kind: VariantEditKind::AddMove { source, set: None }, values: Vec::new(), error: None });
+    }
+
+    pub fn open_rename_variant(&mut self, variant: NodeId) {
+        self.ui.variant_edit = Some(VariantEdit { kind: VariantEditKind::Rename { variant }, values: self.variant_values(variant), error: None });
+    }
+
+    pub fn add_variant(&mut self, set: NodeId, source: NodeId, mode: AddVariantMode, values: &[(String, String)]) -> Result<NodeId, String> {
+        let cmd = desigma_doc::add_variant(&mut self.doc, set, source, mode, values).map_err(|e| e.to_string())?;
+        let mut tx = Tx::new();
+        if !self.push_cmd(&mut tx, cmd) {
+            tx.cancel(&mut self.doc);
+            return Err("variant edit failed".into());
+        }
+        let id = desigma_doc::find_variant(&self.doc, set, values).ok_or("variant was not created")?;
+        self.run_tx(tx);
+        self.selection = vec![id];
+        Ok(id)
+    }
+
+    pub fn remove_variant(&mut self, variant: NodeId) -> Result<NodeId, String> {
+        let set = variant_set(&self.doc, variant).ok_or("variant has no component set")?;
+        let cmd = desigma_doc::remove_variant(&mut self.doc, variant).map_err(|e| e.to_string())?;
+        let mut tx = Tx::new();
+        if !self.push_cmd(&mut tx, cmd) {
+            tx.cancel(&mut self.doc);
+            return Err("variant removal failed".into());
+        }
+        self.run_tx(tx);
+        self.selection = vec![set];
+        Ok(set)
+    }
+
+    pub fn rename_variant(&mut self, variant: NodeId, values: &[(String, String)]) -> Result<(), String> {
+        let cmd = desigma_doc::rename_variant(&mut self.doc, variant, values).map_err(|e| e.to_string())?;
+        let mut tx = Tx::new();
+        if !self.push_cmd(&mut tx, cmd) {
+            tx.cancel(&mut self.doc);
+            return Err("variant rename failed".into());
+        }
+        self.run_tx(tx);
+        self.selection = vec![variant];
+        Ok(())
+    }
+
+    fn selected_variant(&self) -> Option<NodeId> {
+        self.selection.first().copied().filter(|id| variant_set(&self.doc, *id).is_some())
+    }
+
+    pub fn add_variant_from_selection(&mut self) {
+        let Some(id) = self.selection.first().copied() else { return };
+        match self.doc.get(id).map(|node| node.kind.clone()) {
+            Some(NodeKind::ComponentSet(_)) => {
+                if let Some(source) = components_of(&self.doc, id).first().copied() {
+                    self.open_add_variant_copy(id, source);
+                }
+            }
+            Some(NodeKind::Component(_)) => {
+                if let Some(parent) = variant_set(&self.doc, id) {
+                    self.open_add_variant_copy(parent, id);
+                } else {
+                    self.open_add_variant_move(id);
+                }
+            }
+            _ => self.show_toast("Select a component or component set", true),
+        }
+    }
+
+    pub fn remove_variant_from_selection(&mut self) {
+        if let Some(variant) = self.selected_variant() {
+            if let Err(error) = self.remove_variant(variant) {
+                self.show_toast(error, true);
+            }
+        }
+    }
+
+    pub fn rename_variant_from_selection(&mut self) {
+        if let Some(variant) = self.selected_variant() {
+            self.open_rename_variant(variant);
+        }
+    }
+
+    /// Applies the inline variant editor. On failure the editor stays open with
+    /// the error so the values are not lost.
+    pub fn submit_variant_edit(&mut self) {
+        let Some(edit) = self.ui.variant_edit.take() else { return };
+        let values = edit.values.clone();
+        let result = match edit.kind {
+            VariantEditKind::AddCopy { set, source } => self.add_variant(set, source, AddVariantMode::Copy, &values).map(|_| ()),
+            VariantEditKind::AddMove { source, set: Some(set) } => self.add_variant(set, source, AddVariantMode::Move, &values).map(|_| ()),
+            VariantEditKind::AddMove { set: None, .. } => Err("choose a component set first".into()),
+            VariantEditKind::Rename { variant } => self.rename_variant(variant, &values),
+        };
+        if let Err(error) = result {
+            let mut edit = edit;
+            edit.error = Some(error);
+            self.ui.variant_edit = Some(edit);
+        }
     }
 
     /// Context menu "Combine as variants".
@@ -364,5 +492,89 @@ impl App {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::VariantEditKind;
+
+    fn frame(doc: &mut Document, page: NodeId, name: &str, x: f32) -> NodeId {
+        let id = doc.alloc_id();
+        let mut node = Node::frame(id, Rect::new(x, 0.0, 100.0, 40.0));
+        node.name = name.into();
+        doc.insert(page, node).unwrap();
+        id
+    }
+
+    fn apply(doc: &mut Document, cmd: Command) {
+        cmd.apply(doc).unwrap();
+    }
+
+    fn fixture() -> (App, NodeId, NodeId, NodeId) {
+        let mut doc = Document::new("t");
+        let page = doc.add_page("P");
+        let small = frame(&mut doc, page, "Size=Small", 0.0);
+        let large = frame(&mut doc, page, "Size=Large", 150.0);
+        let small_cmd = create_component(&mut doc, small);
+        apply(&mut doc, small_cmd);
+        let large_cmd = create_component(&mut doc, large);
+        apply(&mut doc, large_cmd);
+        let combine_cmd = combine_as_variants(&mut doc, &[small, large]);
+        apply(&mut doc, combine_cmd);
+        let set = doc.get(small).unwrap().parent.unwrap();
+        (App::new(doc), page, set, small)
+    }
+
+    #[test]
+    fn variant_editor_adds_renames_and_undoes_as_one_step() {
+        let (mut app, _page, set, small) = fixture();
+        app.open_add_variant_copy(set, small);
+        let edit = app.ui.variant_edit.as_mut().expect("editor");
+        edit.values = vec![("Size".into(), "Medium".into())];
+        app.submit_variant_edit();
+        assert_eq!(components_of(&app.doc, set).len(), 3);
+        let medium = app.doc.nodes.values().find(|node| node.name == "Size=Medium").map(|node| node.id).expect("medium variant");
+        assert_eq!(app.doc.get(medium).unwrap().parent, Some(set));
+        assert_eq!(app.selection, vec![medium], "adding selects the new variant");
+
+        app.open_rename_variant(medium);
+        app.ui.variant_edit.as_mut().unwrap().values = vec![("Size".into(), "Wide".into())];
+        app.submit_variant_edit();
+        assert_eq!(app.doc.get(medium).unwrap().name, "Size=Wide");
+        assert_eq!(app.selection, vec![medium], "renaming keeps the variant selected");
+        app.undo();
+        assert_eq!(app.doc.get(medium).unwrap().name, "Size=Medium", "rename is one undo step");
+    }
+
+    #[test]
+    fn variant_remove_refuses_instances_and_raw_rename_is_guarded() {
+        let (mut app, page, set, small) = fixture();
+        let large = components_of(&app.doc, set).into_iter().find(|id| *id != small).unwrap();
+        let instance = create_instance(&mut app.doc, large, page, Vec2::new(0.0, 200.0));
+        apply(&mut app.doc, instance);
+        let error = app.remove_variant(large).unwrap_err();
+        assert!(error.contains("instance"), "{error}");
+        assert_eq!(components_of(&app.doc, set).len(), 2);
+
+        app.rename(small, "Size=Other");
+        assert_eq!(app.doc.get(small).unwrap().name, "Size=Small", "raw rename is refused for variants");
+    }
+
+    #[test]
+    fn variant_editor_moves_a_standalone_component_into_a_set() {
+        let (mut app, page, set, _small) = fixture();
+        let standalone = frame(&mut app.doc, page, "Icon", 300.0);
+        let cmd = create_component(&mut app.doc, standalone);
+        apply(&mut app.doc, cmd);
+        app.open_add_variant_move(standalone);
+        let edit = app.ui.variant_edit.as_mut().unwrap();
+        edit.kind = VariantEditKind::AddMove { source: standalone, set: Some(set) };
+        edit.values = vec![("Size".into(), "Icon".into())];
+        app.submit_variant_edit();
+        assert_eq!(app.doc.get(standalone).unwrap().parent, Some(set));
+        assert_eq!(app.doc.get(standalone).unwrap().name, "Size=Icon");
+        assert_eq!(app.selection, vec![standalone], "moving selects the new variant");
     }
 }

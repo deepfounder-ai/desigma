@@ -419,3 +419,36 @@ fn an_explicit_sync_does_not_turn_what_it_synced_into_overrides() {
     e.call("desigma_set_appearance", json!({"node_id":rect,"fill":"#ffffff"})).unwrap();
     assert_ne!(e.doc.get(child).unwrap().fills, e.doc.get(NodeId(rect)).unwrap().fills, "the instance keeps its own fill");
 }
+
+#[test]
+fn variants_properties_and_instance_values_survive_save_and_reopen() {
+    let dir = Workspace::new();
+    let mut s = Session::with_discovery(&dir.0, None).unwrap();
+    let page = s.call("desigma_get_document", json!({})).unwrap()["pages"][0]["node_id"].clone();
+    let frame = |s: &mut Session, name: &str, x: f64| {
+        s.call("desigma_create_node", json!({"parent_id":page,"kind":"frame","name":name,"x":x,"width":100,"height":40})).unwrap()["node"]["id"].clone()
+    };
+    let small = frame(&mut s, "Size=Small", 0.0);
+    let large = frame(&mut s, "Size=Large", 150.0);
+    for id in [&small, &large] {
+        s.call("desigma_create_component", json!({"node_id":id})).unwrap();
+    }
+    let combined = s.call("desigma_combine_as_variants", json!({"component_ids":[small,large],"name":"Button"})).unwrap();
+    let set = combined["set_id"].clone();
+    let small = combined["variant_ids"][0].clone();
+    s.call("desigma_add_component_property", json!({"owner_id":set,"name":"Show icon","kind":"boolean","default":true})).unwrap();
+    let icon = s.call("desigma_create_node", json!({"parent_id":small,"kind":"rectangle","name":"Icon","width":20,"height":20})).unwrap()["node"]["id"].clone();
+    s.call("desigma_bind_component_property", json!({"node_id":icon,"field":"visible","property":"Show icon"})).unwrap();
+    let instance = s.call("desigma_create_instance", json!({"component_id":small,"parent_id":page})).unwrap()["instance_id"].clone();
+    s.call("desigma_set_instance_property", json!({"node_id":instance,"name":"Show icon","value":false})).unwrap();
+    s.call("desigma_save_file", json!({"path":"variants.desigma"})).unwrap();
+    s.call("desigma_open_file", json!({"path":"variants.desigma"})).unwrap();
+
+    let set_node = s.call("desigma_get_node", json!({"node_id":set})).unwrap()["node"].clone();
+    assert_eq!(set_node["name"], "Button");
+    assert!(set_node["component"]["props"].as_array().unwrap().iter().any(|def| def["name"] == "Show icon"));
+    let instance_node = s.call("desigma_get_node", json!({"node_id":instance})).unwrap()["node"].clone();
+    assert_eq!(instance_node["component"]["values"]["Show icon"]["Bool"], false);
+    let icon_child = s.call("desigma_list_nodes", json!({"parent_id":instance})).unwrap()["nodes"].as_array().unwrap()[0]["node_id"].clone();
+    assert_eq!(s.call("desigma_get_node", json!({"node_id":icon_child})).unwrap()["node"]["visible"], false);
+}

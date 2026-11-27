@@ -1,0 +1,3 @@
+# Variant properties are derived, not independently edited
+
+Variant properties are not ordinary component properties: their options come from the sibling variants in a component set, and selecting an option selects the variant whose name carries that value. The editor and MCP therefore create, rename, and remove them only through variant lifecycle operations; component-property CRUD covers Boolean, Text, and Instance Swap. This keeps the component names, option lists, defaults, bindings, and instance selections from diverging. The alternative—letting variant properties be renamed or deleted independently—would require a second synchronization path and can leave a set advertising values that no variant provides.

@@ -97,6 +97,28 @@ components and theme tokens.
 - Detach (`desigma_detach_instance`) when the divergence is real, not to get one change
   through.
 
+## Variants and component properties
+
+- Build the whole family before combining it: `desigma_combine_as_variants` takes existing
+  main components, not frames. Name each component `Size=Large, State=Hover` (or let the
+  default `Property 1=<name>` rule apply), then combine. The set owns one variant property
+  per distinct property name.
+- Extend an existing family with `desigma_add_variant`: `mode: "copy"` duplicates a variant,
+  `mode: "move"` moves a standalone component into the set. Supply every variant property
+  value. A new value becomes a new option; the set is relaid out.
+- Use `desigma_rename_variant` instead of `desigma_update_node` for a variant name. It updates
+  the component name, the option list, the default, and explicit instance selections together.
+  A value collision is refused.
+- `desigma_remove_variant` refuses while an instance points at the variant and refuses the
+  last variant. Swap or detach those instances first; the tool does not silently rewrite a
+  screen.
+- Variant properties are derived and read-only as ordinary properties. Boolean, Text, and
+  Instance Swap properties are added with `desigma_add_component_property`, bound with
+  `desigma_bind_component_property`, and set per instance with
+  `desigma_set_instance_property`; omitting `value` resets to the default.
+- Read the set's `component.props` and each variant's `component.values` through
+  `desigma_get_node` before choosing values.
+
 ## Guardrails
 
 - In editor mode the document is the user's. Do not pass `discard_changes: true` to

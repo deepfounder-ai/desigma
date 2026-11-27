@@ -646,6 +646,11 @@ impl App {
         if name.is_empty() {
             return;
         }
+        let is_variant = desigma_doc::variant_set(&self.doc, id).is_some();
+        if is_variant {
+            self.show_toast("Use Rename variant to keep the variant properties in sync", true);
+            return;
+        }
         self.edit_nodes(&[id], |n| n.name = name.clone());
     }
 

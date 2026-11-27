@@ -117,6 +117,15 @@ Imports are limited to 64 MiB per file, 100,000 layers, and 256 levels of nestin
 | `desigma_create_instance` | Place an instance of a main component in a container at (x, y). |
 | `desigma_detach_instance` | Detach an instance in place, keeping its mirrored subtree as ordinary layers. |
 | `desigma_sync_instances` | Re-apply a main component's current state to all of its instances. |
+| `desigma_combine_as_variants` | Create a component set from 1–100 existing main components, optionally named. |
+| `desigma_add_variant` | Add a variant by copying a component or moving a standalone component into a set; values must cover every variant property. |
+| `desigma_remove_variant` | Remove an unused variant; refuses when instances point at it or it is the last variant, then prunes options/defaults. |
+| `desigma_rename_variant` | Rename a variant with complete property values; updates the set options, default, and explicit instance selections. |
+| `desigma_add_component_property` | Add a Boolean, Text, or Instance Swap property to a component or set. |
+| `desigma_update_component_property` | Rename a property and/or change its default; the kind is immutable. |
+| `desigma_delete_component_property` | Delete a property with its bindings and instance values. |
+| `desigma_bind_component_property` | Bind visibility, characters, or the main component to a property; omit the property to unbind. |
+| `desigma_set_instance_property` | Set or clear a Boolean, Text, Variant, or Instance Swap value on an instance. |
 | `desigma_undo` / `desigma_redo` | Traverse the edit history. In the editor it is the user's own undo stack, so `desigma_undo` may undo the user's latest edit. |
 | `desigma_export_image` | Render a node to a PNG at `scale` (0.25–4, default 1) and write it to `path` inside the workspace, overwriting if present; returns `{path,width,height}`. Works in both session types. |
 | `desigma_add_keyframe` | Add or update a keyframe of an animatable layer property at `time_ms`, with optional easing, bezier, or spring. |
