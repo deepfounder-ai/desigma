@@ -181,6 +181,10 @@ pub struct App {
     pub file_hash: Option<u64>,
     /// An open waiting for the answer to "Discard unsaved changes?".
     pub pending_open: Option<crate::instance::Open>,
+    /// Window close waiting for the answer to "Discard unsaved changes?".
+    pub pending_close: bool,
+    /// Confirmed close (Discard or Save succeeded): allow the next `close_requested` through.
+    pub force_close: bool,
     /// AI images: the OpenRouter settings, the open dialog and running requests (see `aiimg`).
     pub ai: crate::aiimg::AiState,
     /// Watching the open file for changes made by other programs (see `extwatch.rs`).
@@ -241,6 +245,8 @@ impl App {
             collab: Default::default(),
             file_hash: None,
             pending_open: None,
+            pending_close: false,
+            force_close: false,
             ai: Default::default(),
             ext_watch: None,
         }
