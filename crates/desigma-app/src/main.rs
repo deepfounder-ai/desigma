@@ -152,7 +152,10 @@ fn main() {
         }
     }
     #[cfg(target_os = "macos")]
-    macos::register();
+    {
+        macos::register();
+        macos::install_open_hook();
+    }
     let (w, h) = opts.size.unwrap_or((theme::DEFAULT_WINDOW.0 as u32, theme::DEFAULT_WINDOW.1 as u32));
     let screenshot_mode = opts.screenshot.is_some();
     let mut viewport = egui::ViewportBuilder::default()

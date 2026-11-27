@@ -84,9 +84,9 @@ is needed.
 ```
 
 **Opening files.** `.desigma` and `.fig` files list desigma under **Open With** in Finder.
-Double-clicking a file in Finder does not hand it to a running desigma yet (the windowing
-library does not expose macOS "open file" events); use **File → Open**, drag the file onto the
-window, or run `/Applications/desigma.app/Contents/MacOS/desigma path/to/file.desigma`.
+Double-clicking a `.desigma` file opens it in the running editor (a file that replaces unsaved
+work asks first, exactly like **File → Open**); running
+`/Applications/desigma.app/Contents/MacOS/desigma path/to/file.desigma` does the same.
 
 `desigma-<version>-macos-universal.tar.gz` holds the same `desigma.app` plus the licenses, for
 scripting; unpack it and run `xattr -dr com.apple.quarantine desigma.app` once.

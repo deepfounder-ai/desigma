@@ -791,6 +791,8 @@ impl App {
         // Pending edits of the library file being left are saved first (from the live state, not an old version).
         self.exit_version_view();
         self.flush_autosave();
+        // a document on the canvas replaces whatever the file browser was showing
+        self.home = None;
         self.lib_file = None;
         self.renaming_file = false;
         let mut doc = doc;

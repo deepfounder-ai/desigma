@@ -57,6 +57,6 @@ DESIGMA_UPDATE_URL=releases.json target/debug/desigma --fixture showcase --panel
 
 ## Not covered yet
 
-- macOS: the app is ad-hoc signed but not signed with a Developer ID or notarized, so Gatekeeper asks for a one-time Open Anyway. Double-clicking a file in Finder does not pass it to desigma (winit 0.30 does not expose `application:openFiles:`); "Open With" lists desigma through `CFBundleDocumentTypes`.
+- macOS: the app is ad-hoc signed but not signed with a Developer ID or notarized, so Gatekeeper asks for a one-time Open Anyway. "Open With" lists desigma through `CFBundleDocumentTypes`, and a double click in Finder opens the file in the running editor.
 - Windows binaries are unsigned (SmartScreen warning). There is no installer; the zip is the download.
 - Linux binaries link the build runner's glibc; they run on that distribution or newer.
