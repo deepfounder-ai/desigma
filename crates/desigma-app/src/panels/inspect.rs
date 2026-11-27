@@ -255,11 +255,13 @@ pub(crate) fn download(app: &mut App, id: NodeId, asset: &Asset) {
         app.show_toast("Nothing to download", true);
         return;
     }
-    let Some(path) = rfd::FileDialog::new().add_filter(label, &[ext]).set_file_name(file).save_file() else { return };
-    match std::fs::write(&path, bytes) {
-        Ok(()) => app.show_toast(format!("Saved {}", path.display()), false),
-        Err(e) => app.show_toast(format!("Download failed: {e}"), true),
-    }
+    app.pick_file_async(
+        move || rfd::FileDialog::new().add_filter(label, &[ext]).set_file_name(file).save_file(),
+        move |app, path| match std::fs::write(&path, bytes) {
+            Ok(()) => app.show_toast(format!("Saved {}", path.display()), false),
+            Err(e) => app.show_toast(format!("Download failed: {e}"), true),
+        },
+    );
 }
 
 fn kind_label(k: &NodeKind) -> &'static str {

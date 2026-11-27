@@ -185,6 +185,8 @@ pub struct App {
     pub ai: crate::aiimg::AiState,
     /// Watching the open file for changes made by other programs (see `extwatch.rs`).
     pub ext_watch: Option<crate::extwatch::Watch>,
+    /// Active background native file dialog awaiting user selection.
+    pub file_dialog: Option<crate::file_dialog::PendingFileDialog>,
 }
 
 impl App {
@@ -243,6 +245,7 @@ impl App {
             pending_open: None,
             ai: Default::default(),
             ext_watch: None,
+            file_dialog: None,
         }
     }
 

@@ -979,8 +979,14 @@ pub fn prepare_image(bytes: Vec<u8>) -> Result<(Vec<u8>, u32, u32), String> {
 }
 
 fn place_image(app: &mut App, page: DV) {
-    let exts: Vec<&str> = IMAGE_EXTENSIONS.iter().chain(crate::video::VIDEO_EXTENSIONS.iter()).copied().collect();
-    let Some(path) = rfd::FileDialog::new().add_filter("Images and video", &exts).pick_file() else { return };
+    let exts: Vec<&'static str> = IMAGE_EXTENSIONS.iter().chain(crate::video::VIDEO_EXTENSIONS.iter()).copied().collect();
+    app.pick_file_async(
+        move || rfd::FileDialog::new().add_filter("Images and video", &exts).pick_file(),
+        move |app, path| place_image_from_path(app, page, path),
+    );
+}
+
+fn place_image_from_path(app: &mut App, page: DV, path: std::path::PathBuf) {
     let Ok(bytes) = std::fs::read(&path) else {
         app.show_toast("Cannot read file", true);
         return;

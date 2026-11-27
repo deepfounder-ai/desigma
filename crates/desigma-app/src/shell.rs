@@ -762,6 +762,7 @@ impl Shell {
         self.app.poll_plugins();
         self.app.poll_updater(&ctx);
         self.app.poll_install(&ctx);
+        self.app.poll_file_dialog(&ctx);
         self.drive_screenshot(&ctx);
         if ctx.input(|i| i.viewport().close_requested()) {
             crate::decks::ui::flush_notes(&mut self.app);

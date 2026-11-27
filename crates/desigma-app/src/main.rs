@@ -18,6 +18,7 @@ mod demo;
 mod dev;
 mod edit;
 mod extwatch;
+mod file_dialog;
 mod find;
 mod fonts;
 mod history;

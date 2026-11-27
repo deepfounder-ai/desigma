@@ -100,8 +100,12 @@ impl App {
         let name = self.doc.get(node).map(|n| n.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| self.doc.name.clone());
         let f = self.canvas.motion.export.opts.format;
         let file = format!("{}.{}", desigma_export::sanitize_file_name(&name), f.extension());
-        let Some(path) = rfd::FileDialog::new().add_filter(f.label(), &[f.extension()]).set_file_name(&file).save_file() else { return };
-        self.export_animation_to(node, path);
+        let label = f.label();
+        let ext = f.extension();
+        self.pick_file_async(
+            move || rfd::FileDialog::new().add_filter(label, &[ext]).set_file_name(&file).save_file(),
+            move |app, path| app.export_animation_to(node, path),
+        );
     }
 
     /// Starts the background export of `node` to `path` with the remembered settings.

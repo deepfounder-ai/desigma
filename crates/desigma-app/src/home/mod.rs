@@ -418,27 +418,37 @@ pub fn apply(app: &mut App, act: Act) {
             changed = false;
         }
         Act::Import => {
-            let paths = rfd::FileDialog::new()
-                .add_filter("Design files", &["fig", "pen", "json", "svg", "desigma"])
-                .add_filter("Figma file", &["fig"])
-                .add_filter("Pencil file", &["pen"])
-                .add_filter("SVG", &["svg"])
-                .add_filter("JSON", &["json"])
-                .add_filter("desigma", &["desigma"])
-                .pick_files();
-            if let Some(paths) = paths {
-                let target = match app.home_target() {
-                    Some(t) => Some(t),
-                    None => app.home.as_ref().and_then(|h| h.snap.projects.first().map(|p| (p.id.clone(), None))),
-                };
-                let target = match target {
-                    Some(t) => Some(t),
-                    None => ok(app, lib.create_project("My project")).map(|p| (p.id, None)),
-                };
-                if let Some((p, f)) = target {
-                    app.import_into_library(&paths, &p, f.as_deref());
-                }
-            }
+            changed = false;
+            app.pick_files_async(
+                || {
+                    rfd::FileDialog::new()
+                        .add_filter("Design files", &["fig", "pen", "json", "svg", "desigma"])
+                        .add_filter("Figma file", &["fig"])
+                        .add_filter("Pencil file", &["pen"])
+                        .add_filter("SVG", &["svg"])
+                        .add_filter("JSON", &["json"])
+                        .add_filter("desigma", &["desigma"])
+                        .pick_files()
+                        .unwrap_or_default()
+                },
+                |app, paths| {
+                    let Some(lib) = app.lib.clone() else { return };
+                    let target = match app.home_target() {
+                        Some(t) => Some(t),
+                        None => app.home.as_ref().and_then(|h| h.snap.projects.first().map(|p| (p.id.clone(), None))),
+                    };
+                    let target = match target {
+                        Some(t) => Some(t),
+                        None => ok(app, lib.create_project("My project")).map(|p| (p.id, None)),
+                    };
+                    if let Some((p, f)) = target {
+                        app.import_into_library(&paths, &p, f.as_deref());
+                        if let Some(home) = app.home.as_mut() {
+                            home.dirty = true;
+                        }
+                    }
+                },
+            );
         }
         Act::NewProject => app.dialog = Some(Dialog::prompt(Intent::NewProject, "New project", "", "Create")),
         Act::RenameProject(id) => {

@@ -47,14 +47,17 @@ impl App {
             safe_filename(&format!("{} - {slide}", self.doc.name))
         };
         crate::canvas::interact::finish_text(self, true);
-        let Some(path) = rfd::FileDialog::new().add_filter("PDF document", &["pdf"]).set_file_name(format!("{name}.pdf")).save_file() else {
-            return;
-        };
-        let result = self.deck_pdf_bytes(all).and_then(|bytes| std::fs::write(&path, bytes).map_err(|error| format!("Cannot save the PDF: {error}")));
-        match result {
-            Ok(()) => self.show_toast(format!("Exported {} {} to {}", slides.len(), if slides.len() == 1 { "slide" } else { "slides" }, path.display()), false),
-            Err(error) => self.show_toast(error, true),
-        }
+        let slides_count = slides.len();
+        self.pick_file_async(
+            move || rfd::FileDialog::new().add_filter("PDF document", &["pdf"]).set_file_name(format!("{name}.pdf")).save_file(),
+            move |app, path| {
+                let result = app.deck_pdf_bytes(all).and_then(|bytes| std::fs::write(&path, bytes).map_err(|error| format!("Cannot save the PDF: {error}")));
+                match result {
+                    Ok(()) => app.show_toast(format!("Exported {} {} to {}", slides_count, if slides_count == 1 { "slide" } else { "slides" }, path.display()), false),
+                    Err(error) => app.show_toast(error, true),
+                }
+            },
+        );
     }
 }
 
