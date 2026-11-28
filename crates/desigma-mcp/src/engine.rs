@@ -521,17 +521,23 @@ pub fn write_design(path: &std::path::Path, bytes: &[u8], overwrite: bool) -> Re
 /// Streams a document into the same atomic/symlink-safe save policy as
 /// [`write_design`], without building the JSON text first.
 pub fn write_design_doc(path: &std::path::Path, doc: &Document, overwrite: bool) -> Result<(), String> {
+    use std::io::{BufWriter, Write};
     if !overwrite {
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)
             .map_err(|e| format!("Cannot create file (choose an unused .desigma filename, or pass overwrite=true): {e}"))?;
-        let result = doc.write_json(&mut file).and_then(|_| file.sync_all().map_err(serde_json::Error::io));
+        let mut writer = BufWriter::new(file);
+        let result = (|| {
+            doc.write_json(&mut writer).map_err(|e| format!("Cannot save design: {e}"))?;
+            writer.flush().map_err(|e| format!("Cannot save design: {e}"))?;
+            writer.get_ref().sync_all().map_err(|e| format!("Cannot save design: {e}"))
+        })();
+        drop(writer);
         if let Err(e) = result {
-            drop(file);
             let _ = std::fs::remove_file(path);
-            return Err(format!("Cannot save design: {e}"));
+            return Err(e);
         }
         return Ok(());
     }
@@ -541,15 +547,18 @@ pub fn write_design_doc(path: &std::path::Path, doc: &Document, overwrite: bool)
     let dir = path.parent().ok_or("Save path needs a parent directory")?;
     let name = path.file_name().ok_or("Save path needs a filename")?.to_string_lossy();
     let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
-    let res = (|| -> std::io::Result<()> {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        doc.write_json(&mut file).map_err(std::io::Error::other)?;
-        file.sync_all()?;
-        std::fs::rename(&tmp, path)
+    let res = (|| -> Result<(), String> {
+        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| format!("Cannot save design: {e}"))?;
+        let mut writer = BufWriter::new(file);
+        doc.write_json(&mut writer).map_err(|e| format!("Cannot save design: {e}"))?;
+        writer.flush().map_err(|e| format!("Cannot save design: {e}"))?;
+        writer.get_ref().sync_all().map_err(|e| format!("Cannot save design: {e}"))?;
+        drop(writer);
+        std::fs::rename(&tmp, path).map_err(|e| format!("Cannot save design: {e}"))
     })();
     if let Err(e) = res {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("Cannot save design: {e}"));
+        return Err(e);
     }
     Ok(())
 }

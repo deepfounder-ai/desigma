@@ -19,7 +19,7 @@ fn main() {
         }
     };
     let out = match mode.as_deref() {
-        Some("--doc") => desigma_fig::import_fig(&bytes).map(|d| d.to_json().unwrap_or_default()),
+        Some("--doc") => desigma_fig::import_fig(&bytes).map(|d| d.to_json_pretty().unwrap_or_default()),
         Some("--rest") => desigma_fig::import_fig(&bytes).map(|d| desigma_fig::export_rest_json(&d).to_string()),
         _ => desigma_fig::decode_fig_to_json(&bytes).map(|v| serde_json::to_string_pretty(&v).unwrap_or_default()),
     };
