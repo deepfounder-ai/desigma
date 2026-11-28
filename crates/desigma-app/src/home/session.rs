@@ -417,8 +417,7 @@ fn write_shared(root: &std::path::Path, doc: &Document, source: &std::path::Path
     let dir = root.join(desigma_library::SHARED_DIR);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{}.desigma", shared_file_name(&doc.name, source)));
-    let json = doc.to_json().map_err(|e| e.to_string())?;
-    desigma_library::write_atomic(&path, json.as_bytes()).map_err(|e| e.to_string())
+    crate::io::write_doc_atomic(&path, doc)
 }
 
 #[cfg(test)]

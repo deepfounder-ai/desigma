@@ -14,6 +14,7 @@
 
 use desigma_doc::*;
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
 
@@ -129,7 +130,12 @@ fn main() {
         [flag, count, out] if flag == "--synth" => {
             let count: usize = count.parse().expect("instance count");
             let doc = phase("generate", || synth(count));
-            phase("write", || std::fs::write(out, doc.to_json().expect("serialize")).expect("write file"));
+            phase("write", || {
+                let file = std::fs::File::create(out).expect("create file");
+                let mut writer = BufWriter::new(file);
+                doc.write_json(&mut writer).expect("serialize");
+                writer.flush().expect("flush file");
+            });
             println!("wrote {out}\n");
             out.clone()
         }
@@ -176,10 +182,20 @@ fn main() {
     );
     println!("precomputed geometry {:.1} MB | image bytes {:.1} MB | Node struct {} B", mb(geometry), mb(images), size_of::<Node>());
 
-    let json = phase("save", || doc.to_json().expect("serialize"));
-    println!("saved      {:.1} MB", mb(json.len()));
+    let out = std::env::temp_dir().join(format!("desigma-doc-memory-{}.desigma", std::process::id()));
+    phase("save", || {
+        let file = std::fs::File::create(&out).expect("create save file");
+        let mut writer = BufWriter::new(file);
+        doc.write_json(&mut writer).expect("serialize");
+        writer.flush().expect("flush save file");
+    });
+    let size = std::fs::metadata(&out).expect("saved size").len();
+    println!("saved      {:.1} MB", mb(size as usize));
     drop(doc);
-    let back = phase("reload", || Document::from_json(&json).expect("reparse"));
-    drop(json);
+    let back = phase("reload", || {
+        let text = std::fs::read_to_string(&out).expect("read saved file");
+        Document::from_json(&text).expect("reparse")
+    });
+    let _ = std::fs::remove_file(&out);
     println!("reloaded {} nodes; heap {:.1} MB", back.nodes.len(), mb(LIVE.load(Relaxed)));
 }

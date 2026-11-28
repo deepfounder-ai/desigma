@@ -518,6 +518,51 @@ pub fn write_design(path: &std::path::Path, bytes: &[u8], overwrite: bool) -> Re
     Ok(())
 }
 
+/// Streams a document into the same atomic/symlink-safe save policy as
+/// [`write_design`], without building the JSON text first.
+pub fn write_design_doc(path: &std::path::Path, doc: &Document, overwrite: bool) -> Result<(), String> {
+    use std::io::{BufWriter, Write};
+    if !overwrite {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| format!("Cannot create file (choose an unused .desigma filename, or pass overwrite=true): {e}"))?;
+        let mut writer = BufWriter::new(file);
+        let result = (|| {
+            doc.write_json(&mut writer).map_err(|e| format!("Cannot save design: {e}"))?;
+            writer.flush().map_err(|e| format!("Cannot save design: {e}"))?;
+            writer.get_ref().sync_all().map_err(|e| format!("Cannot save design: {e}"))
+        })();
+        drop(writer);
+        if let Err(e) = result {
+            let _ = std::fs::remove_file(path);
+            return Err(e);
+        }
+        return Ok(());
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink() || !m.is_file()) {
+        return Err("Cannot overwrite: the path exists and is not a regular file".into());
+    }
+    let dir = path.parent().ok_or("Save path needs a parent directory")?;
+    let name = path.file_name().ok_or("Save path needs a filename")?.to_string_lossy();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let res = (|| -> Result<(), String> {
+        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| format!("Cannot save design: {e}"))?;
+        let mut writer = BufWriter::new(file);
+        doc.write_json(&mut writer).map_err(|e| format!("Cannot save design: {e}"))?;
+        writer.flush().map_err(|e| format!("Cannot save design: {e}"))?;
+        writer.get_ref().sync_all().map_err(|e| format!("Cannot save design: {e}"))?;
+        drop(writer);
+        std::fs::rename(&tmp, path).map_err(|e| format!("Cannot save design: {e}"))
+    })();
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportArgs {

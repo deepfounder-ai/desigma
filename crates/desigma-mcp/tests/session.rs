@@ -83,6 +83,8 @@ fn saved_file_roundtrip_and_unsaved_changes_guard() {
     let node = s.call("desigma_create_node", json!({"parent_id":page,"kind":"text","name":"Heading","text":"Hello MCP"})).unwrap();
     assert!(s.call("desigma_new_document", json!({"name":"Oops"})).is_err());
     s.call("desigma_save_file", json!({"path":"first.desigma"})).unwrap();
+    let saved_text = fs::read_to_string(dir.0.join("first.desigma")).unwrap();
+    assert!(!saved_text.contains('\n'), "native saves are compact: {saved_text}");
     s.call("desigma_update_node", json!({"node_id":node["node"]["id"],"text":"Changed"})).unwrap();
     assert!(s.call("desigma_open_file", json!({"path":"first.desigma"})).is_err());
     s.call("desigma_open_file", json!({"path":"first.desigma","discard_changes":true})).unwrap();

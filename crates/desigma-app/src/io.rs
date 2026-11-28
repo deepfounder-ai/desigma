@@ -1,6 +1,7 @@
 //! Opening and saving documents.
 
 use desigma_doc::{Document, Vec2};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 pub const NATIVE_EXT: &str = "desigma";
@@ -85,9 +86,30 @@ pub fn save_path(doc: &Document, path: &Path) -> Result<PathBuf, String> {
     if p.extension().is_none() {
         p.set_extension(NATIVE_EXT);
     }
-    let json = doc.to_json().map_err(|e| format!("Cannot serialize: {e}"))?;
-    std::fs::write(&p, json).map_err(|e| format!("Cannot write {}: {e}", p.display()))?;
+    write_doc_atomic(&p, doc)?;
     Ok(p)
+}
+
+/// Streams the document into a temporary file beside `path`, then renames it
+/// into place. Keeps the native save atomic without building the JSON text in
+/// memory first.
+pub(crate) fn write_doc_atomic(path: &Path, doc: &Document) -> Result<(), String> {
+    let dir = path.parent().ok_or_else(|| format!("Save path needs a parent directory: {}", path.display()))?;
+    let name = path.file_name().ok_or_else(|| format!("Save path needs a filename: {}", path.display()))?.to_string_lossy();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let result = (|| -> Result<(), String> {
+        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| format!("Cannot create {}: {e}", tmp.display()))?;
+        let mut writer = BufWriter::new(file);
+        doc.write_json(&mut writer).map_err(|e| format!("Cannot serialize: {e}"))?;
+        writer.flush().map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+        writer.get_ref().sync_all().map_err(|e| format!("Cannot sync {}: {e}", path.display()))?;
+        drop(writer);
+        std::fs::rename(&tmp, path).map_err(|e| format!("Cannot write {}: {e}", path.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 pub fn pick_open() -> Option<PathBuf> {
@@ -131,6 +153,24 @@ mod tests {
         let back = load_path(&p).unwrap();
         assert_eq!(back.name, "Saved");
         assert_eq!(back.nodes.len(), 2);
+        std::fs::remove_file(p).ok();
+    }
+
+    #[test]
+    fn native_save_is_compact_and_serialization_leaves_no_temp() {
+        let mut d = Document::new("Compact");
+        d.add_page("P");
+        let p = save_path(&d, &tmp("compact")).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains('\n'), "native saves are compact: {text}");
+        let leftovers: Vec<_> = std::fs::read_dir(p.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("compact") && name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        assert_eq!(load_path(&p).unwrap().name, "Compact");
         std::fs::remove_file(p).ok();
     }
 
