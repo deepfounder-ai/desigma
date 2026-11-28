@@ -6,7 +6,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender},
         Arc, Mutex,
     },
@@ -15,6 +15,10 @@ use std::{
 };
 
 pub const DISCOVERY_FILE: &str = "bridge.json";
+
+/// Connections served at once. Each one lives at most the read deadline plus the reply deadline,
+/// so this only bounds a misbehaving local client; past it a connection is closed unanswered.
+const MAX_CONNECTIONS: usize = 16;
 
 /// Owned failure: `(status, message)`. Unlike `loopback::Failure` the message is owned so it can
 /// carry the editor's actual error text (e.g. a 422 reply) without leaking it.
@@ -73,7 +77,7 @@ impl Bridge {
         let stopped = Arc::new(AtomicBool::new(false));
         let state = Arc::new(Mutex::new(Shared { document: document.into(), path: path.map(Path::to_path_buf) }));
         let last_call = Arc::new(Mutex::new(None));
-        let server = Server {
+        let server = Arc::new(Server {
             host: format!("127.0.0.1:{port}"),
             token: token.clone(),
             sender,
@@ -81,13 +85,31 @@ impl Bridge {
             state: state.clone(),
             last_call: last_call.clone(),
             ctx,
-        };
+        });
         thread::Builder::new()
             .name("agent-bridge".into())
             .spawn(move || {
+                let open = Arc::new(AtomicUsize::new(0));
                 while !server.stopped.load(Ordering::Acquire) {
                     match listener.accept() {
-                        Ok((mut stream, _)) => server.handle(&mut stream),
+                        // Each connection gets its own thread. Served in turn, a call waiting on the
+                        // editor held every other connection for up to the reply deadline, so another
+                        // client's 300 ms ping went unanswered: desigma-mcp then reported the bridge as
+                        // off, and a second window's `remove_stale` deleted this editor's discovery file.
+                        Ok((mut stream, _)) => {
+                            if open.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+                                open.fetch_sub(1, Ordering::AcqRel);
+                                continue;
+                            }
+                            let (server, done) = (server.clone(), open.clone());
+                            let spawned = thread::Builder::new().name("agent-bridge-call".into()).spawn(move || {
+                                server.handle(&mut stream);
+                                done.fetch_sub(1, Ordering::AcqRel);
+                            });
+                            if spawned.is_err() {
+                                open.fetch_sub(1, Ordering::AcqRel);
+                            }
+                        }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(15)),
                         Err(_) => break,
                     }
@@ -358,6 +380,40 @@ mod tests {
         req.reply.send(Err("node 7 not found".into())).unwrap();
         let r = worker.join().unwrap();
         assert!(r.starts_with("HTTP/1.1 422") && r.contains("node 7 not found"), "{r}");
+    }
+
+    #[test]
+    fn answers_ping_while_a_call_waits_for_the_editor() {
+        let dir = tmp();
+        let b = bridge(&dir);
+        let (port, token) = (b.port(), b.token().to_string());
+        let t = token.clone();
+        let worker = thread::spawn(move || {
+            exchange(
+                port,
+                "POST",
+                &format!("/{t}/call"),
+                &format!("X-Desigma-Token: {t}\r\nContent-Type: application/json\r\n"),
+                r#"{"name":"desigma_get_document","args":{}}"#,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let req = loop {
+            if let Some(r) = b.try_recv() {
+                break r;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        };
+        // The call is now waiting for the editor's reply. Another client's probe uses the same
+        // 300 ms ping as desigma-mcp, and must not queue behind it.
+        assert!(ping(port, &token), "ping went unanswered while a call was pending");
+        // Nor may a second window take this live editor's discovery file for a crashed one.
+        remove_stale(&dir);
+        assert!(dir.join(DISCOVERY_FILE).exists());
+        req.reply.send(Ok(json!({"ok":true}))).unwrap();
+        let r = worker.join().unwrap();
+        assert!(r.starts_with("HTTP/1.1 200"), "{r}");
     }
 
     #[test]
