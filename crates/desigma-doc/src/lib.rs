@@ -363,8 +363,20 @@ impl Document {
         rec(self, root, 0, &mut f);
     }
 
+    /// Serializes the native document as compact JSON.
     pub fn to_json(&self) -> serde_json::Result<String> {
+        serde_json::to_string(self)
+    }
+
+    /// Serializes as indented JSON for debugging and human inspection.
+    pub fn to_json_pretty(&self) -> serde_json::Result<String> {
         serde_json::to_string_pretty(self)
+    }
+
+    /// Streams the native document as compact JSON without building a full
+    /// string. Callers keep their own atomic-write policy around the writer.
+    pub fn write_json(&self, writer: impl std::io::Write) -> serde_json::Result<()> {
+        serde_json::to_writer(writer, self)
     }
 
     /// Parses a native document. Text written by older versions that emulated lists with
@@ -488,6 +500,23 @@ mod tests {
         d.insert(page, Node::rectangle(id, Rect::new(0.0, 0.0, 5.0, 5.0))).unwrap();
         let back = Document::from_json(&d.to_json().unwrap()).unwrap();
         assert_eq!(back.nodes.len(), 2);
+    }
+
+    #[test]
+    fn compact_json_roundtrips_and_pretty_files_still_load() {
+        let mut d = Document::new("t");
+        let page = d.add_page("P");
+        let id = d.alloc_id();
+        d.insert(page, Node::rectangle(id, Rect::new(0.0, 0.0, 5.0, 5.0))).unwrap();
+        let compact = d.to_json().unwrap();
+        assert!(!compact.contains('\n'), "native save output is compact: {compact}");
+        let mut streamed = Vec::new();
+        d.write_json(&mut streamed).unwrap();
+        assert_eq!(String::from_utf8(streamed).unwrap(), compact);
+        let pretty = d.to_json_pretty().unwrap();
+        assert!(pretty.contains('\n'));
+        assert_eq!(Document::from_json(&compact).unwrap().to_json().unwrap(), compact);
+        assert_eq!(Document::from_json(&pretty).unwrap().to_json().unwrap(), compact);
     }
 
     #[test]

@@ -299,8 +299,7 @@ impl App {
                 if a.path.extension().and_then(|e| e.to_str()) != Some(crate::io::NATIVE_EXT) || !a.path.is_absolute() {
                     return Err("Save path must be an absolute .desigma path".into());
                 }
-                let bytes = self.doc.to_json().map_err(|e| e.to_string())?;
-                desigma_mcp::engine::write_design(&a.path, bytes.as_bytes(), a.overwrite)?;
+                desigma_mcp::engine::write_design_doc(&a.path, &self.doc, a.overwrite)?;
                 self.show_toast(format!("Saved copy {}", a.path.display()), false);
                 Ok(json!({"path":a.path,"saved":true}))
             }

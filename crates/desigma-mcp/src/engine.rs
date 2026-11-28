@@ -518,6 +518,42 @@ pub fn write_design(path: &std::path::Path, bytes: &[u8], overwrite: bool) -> Re
     Ok(())
 }
 
+/// Streams a document into the same atomic/symlink-safe save policy as
+/// [`write_design`], without building the JSON text first.
+pub fn write_design_doc(path: &std::path::Path, doc: &Document, overwrite: bool) -> Result<(), String> {
+    if !overwrite {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| format!("Cannot create file (choose an unused .desigma filename, or pass overwrite=true): {e}"))?;
+        let result = doc.write_json(&mut file).and_then(|_| file.sync_all().map_err(serde_json::Error::io));
+        if let Err(e) = result {
+            drop(file);
+            let _ = std::fs::remove_file(path);
+            return Err(format!("Cannot save design: {e}"));
+        }
+        return Ok(());
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink() || !m.is_file()) {
+        return Err("Cannot overwrite: the path exists and is not a regular file".into());
+    }
+    let dir = path.parent().ok_or("Save path needs a parent directory")?;
+    let name = path.file_name().ok_or("Save path needs a filename")?.to_string_lossy();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let res = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        doc.write_json(&mut file).map_err(std::io::Error::other)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Cannot save design: {e}"));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportArgs {
