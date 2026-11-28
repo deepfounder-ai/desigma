@@ -565,6 +565,11 @@ fn create<H: Host>(host: &mut H, a: CreateArgs) -> Result<Value, String> {
     if let (Some(text), NodeKind::Text(props)) = (a.text, &mut node.kind) {
         props.content = text;
     }
+    // A self-sizing text starts at the size of its content, as one typed on the canvas does,
+    // not at the 100×100 default.
+    if let NodeKind::Text(props) = &node.kind {
+        node.size = desigma_engine::layout::fit_text(props, node.size);
+    }
     host.exec(Command::Insert { parent: NodeId(a.parent_id), index, nodes: vec![node] })?;
     Ok(json!({"node":host.doc().get(id),"changed":true}))
 }
@@ -648,6 +653,10 @@ fn update<H: Host>(host: &mut H, a: UpdateArgs) -> Result<Value, String> {
             props.content = text;
             props.runs.clear();
             props.lists.clear();
+        }
+        // New words resize a self-sizing text, unless this call also gave it a size.
+        if a.width.is_none() && a.height.is_none() {
+            node.size = desigma_engine::layout::fit_text(props, node.size);
         }
     }
     let changed = host.doc().get(node.id) != Some(&node);
@@ -841,6 +850,11 @@ fn set_text_style<H: Host>(host: &mut H, a: TextStyleArgs) -> Result<Value, Stri
         }
         text.max_lines = Some(lines);
         applied.push("max_lines");
+    }
+    // Self-sizing text follows its new content and style, as it does when edited on the canvas;
+    // without this an agent's text kept whatever box it was created with.
+    if let NodeKind::Text(t) = &node.kind {
+        node.size = desigma_engine::layout::fit_text(t, node.size);
     }
     commit(host, node, applied)
 }
@@ -3054,6 +3068,26 @@ mod tests {
         }
         e.call("desigma_undo", json!({})).unwrap();
         assert_eq!(e.doc.get(NodeId(text)).unwrap().kind.any_text().unwrap().auto_resize, TextAutoResize::WidthAndHeight);
+    }
+
+    #[test]
+    fn self_sizing_text_takes_the_size_of_its_content() {
+        let mut e = Engine::default();
+        let created = e.call("desigma_create_node", json!({"parent_id":1,"kind":"text","text":"Coffee that tastes like the morning"})).unwrap();
+        let text = created["node"]["id"].as_u64().unwrap();
+        let size = |e: &Engine| e.doc.get(NodeId(text)).unwrap().size;
+        let small = size(&e);
+        assert!(small.x > 100.0 && small.y < 100.0, "created at its content's size, not 100x100: {small:?}");
+        e.call("desigma_set_text_style", json!({"node_id":text,"font_size":48})).unwrap();
+        let big = size(&e);
+        assert!(big.x > small.x * 2.0 && big.y > small.y, "{small:?} -> {big:?}");
+        e.call("desigma_update_node", json!({"node_id":text,"text":"Coffee"})).unwrap();
+        assert!(size(&e).x < big.x / 2.0, "new words resize it");
+        // a size given with the words wins, and a fixed text keeps its box
+        e.call("desigma_update_node", json!({"node_id":text,"text":"Coffee that tastes like the morning","width":300})).unwrap();
+        assert_eq!(size(&e).x, 300.0);
+        e.call("desigma_set_text_style", json!({"node_id":text,"auto_resize":"none","font_size":12})).unwrap();
+        assert_eq!(size(&e).x, 300.0);
     }
 
     #[test]
